@@ -2695,16 +2695,44 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		binder_free_thread(proc, thread);
 		thread = NULL;
 		break;
-	case BINDER_VERSION:
+	case BINDER_VERSION: {
+		struct binder_version __user *ver = ubuf;
+
 		if (size != sizeof(struct binder_version)) {
 			ret = -EINVAL;
 			goto err;
 		}
-		if (put_user(BINDER_CURRENT_PROTOCOL_VERSION, &((struct binder_version *)ubuf)->protocol_version)) {
+		if (put_user(BINDER_CURRENT_PROTOCOL_VERSION,
+			     &ver->protocol_version)) {
 			ret = -EINVAL;
 			goto err;
 		}
 		break;
+	}
+
+	/* { System SW, SA_SAMP */
+	// SAMP : Service Process Management
+	case BINDER_GET_PROC_BINDERSTATS: {
+		//get proc stats,(bc_transactions/br_transactions)
+		//used for the binded service
+		int transactions;
+		if (size != sizeof(int)) {
+			ret = -EINVAL;
+			goto err;
+		}
+
+		//Only consider the called times now
+		transactions = proc->stats.br[_IOC_NR(BR_TRANSACTION)] /*+ proc->stats.bc[_IOC_NR(BC_TRANSACTION)] */;
+
+		binder_debug(BINDER_DEBUG_READ_WRITE,
+			"-- BINDER_GET_PROC_BINDERSTATS transactions = %d\n", transactions);
+		if (put_user(transactions, (uint32_t __user *)ubuf)) {
+			ret = -EINVAL;
+			goto err;
+		}
+		break;
+	}
+
 	default:
 		ret = -EINVAL;
 		goto err;
