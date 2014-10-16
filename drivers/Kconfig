@@ -195,4 +195,7 @@ source "drivers/fingerprint/Kconfig"
 source "drivers/sensorhub/Kconfig"
 
 source "drivers/irled/Kconfig"
+
+source "drivers/android/Kconfig"
+
 endmenu
