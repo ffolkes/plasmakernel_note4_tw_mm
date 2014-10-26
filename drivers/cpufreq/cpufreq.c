@@ -520,7 +520,7 @@ static ssize_t store_scaling_min_freq
 	if (ret)
 		pr_err("cpufreq: Frequency verification failed\n");
 
-	ret = __cpufreq_set_policy(policy, &new_policy);
+	ret = cpufreq_set_policy(policy, &new_policy);
 
 	return ret ? ret : count;
 }
@@ -562,7 +562,7 @@ static ssize_t store_scaling_max_freq
 	if (ret)
 		pr_err("cpufreq: Frequency verification failed\n");
 
-	ret = __cpufreq_set_policy(policy, &new_policy);
+	ret = cpufreq_set_policy(policy, &new_policy);
 
 	return ret ? ret : count;
 }
