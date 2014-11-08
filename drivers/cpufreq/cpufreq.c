@@ -494,7 +494,7 @@ static ssize_t store_scaling_min_freq
 	unsigned int ret = -EINVAL;
 	struct cpufreq_policy new_policy;
 
-    if (!hardlimit_user_enabled_status()) {
+    if (hardlimit_user_enabled_status()) {
         // Yank555.lu - Enforce userspace dvfs lock
         switch (userspace_dvfs_lock_status()) {
             case CPUFREQ_HARDLIMIT_USERSPACE_DVFS_IGNORE:
@@ -512,17 +512,13 @@ static ssize_t store_scaling_min_freq
 	if (ret != 1)
 		return -EINVAL;
 
-    if (hardlimit_user_enabled_status()) {
-        policy->user_policy.min = new_policy.min;
-        new_policy.user_policy.min = new_policy.min;
-    }
-
 	ret = cpufreq_driver->verify(&new_policy);
 	if (ret)
 		pr_err("cpufreq: Frequency verification failed\n");
 
-    if (!hardlimit_user_enabled_status()) {
-        policy->user_policy.min = new_policy.min;
+    policy->user_policy.min = new_policy.min;
+    if (hardlimit_user_enabled_status()) {
+        new_policy.user_policy.min = new_policy.min;
     }
 	ret = cpufreq_set_policy(policy, &new_policy);
 
@@ -541,7 +537,7 @@ static ssize_t store_scaling_max_freq
 	unsigned int ret = -EINVAL;
 	struct cpufreq_policy new_policy;
 
-    if (!hardlimit_user_enabled_status()) {
+    if (hardlimit_user_enabled_status()) {
         // Yank555.lu - Enforce userspace dvfs lock
         switch (userspace_dvfs_lock_status()) {
             case CPUFREQ_HARDLIMIT_USERSPACE_DVFS_IGNORE:
@@ -559,17 +555,13 @@ static ssize_t store_scaling_max_freq
 	if (ret != 1)
 		return -EINVAL;
 
-    if (hardlimit_user_enabled_status()) {
-        policy->user_policy.max = new_policy.max;
-        new_policy.user_policy.max = new_policy.max;
-    }
-
 	ret = cpufreq_driver->verify(&new_policy);
 	if (ret)
 		pr_err("cpufreq: Frequency verification failed\n");
 
-    if (!hardlimit_user_enabled_status()) {
-        policy->user_policy.max = new_policy.max;
+    policy->user_policy.max = new_policy.max;
+    if (hardlimit_user_enabled_status()) {
+        new_policy.user_policy.max = new_policy.max;
     }
 	ret = cpufreq_set_policy(policy, &new_policy);
 
@@ -629,9 +621,6 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 		return -EINVAL;
 
 	ret = cpufreq_set_policy(policy, &new_policy);
-
-	// imoseyon - don't go above 2.27ghz when adding device
-	if (policy->max > 2649600) policy->max = 2649600;
 
 	policy->user_policy.policy = policy->policy;
 	policy->user_policy.governor = policy->governor;
