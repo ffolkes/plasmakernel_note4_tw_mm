@@ -45,6 +45,24 @@ static int tkey_load_fw(struct cypress_touchkey_info *info, u8 fw_path);
 static int tkey_unload_fw(struct cypress_touchkey_info *info, u8 fw_path);
 #endif
 
+// tk misc
+static bool flg_skip_next = false;
+
+// tk user definable
+static unsigned int tk_key_keycode = 0;
+static unsigned int sttg_tk_key1_key_code = 0;
+static unsigned int sttg_tk_key2_key_code = 0;
+
+// tk dt (double tap)
+static unsigned int sttg_tk_mt_key1_mode = 0; // 0 = off, 1+ = on & number of presses required
+static unsigned int sttg_tk_mt_key2_mode = 0; // 0 = off, 1+ = on & number of presses required
+static unsigned int sttg_tk_mt_minimum_between = 100;
+static unsigned int sttg_tk_mt_maximum_between = 500;
+static unsigned int tk_mt_last_keycode_type = 0;
+static int ctr_tk_mt_presses = 0;
+static struct timeval time_tk_lastpress;
+static unsigned int time_since_tk_mt_lastpress = 0;
+
 static void cypress_touchkey_reset(struct cypress_touchkey_info *info);
 
 static int touchkey_led_status;
@@ -100,57 +118,6 @@ static int cypress_touchkey_i2c_write(struct i2c_client *client,
 	return err;
 }
 
-static void cypress_touchkey_interrupt_set_dual(struct i2c_client *client)
-{
-	struct cypress_touchkey_info *info = dev_get_drvdata(&client->dev);
-	int ret = 0;
-	int retry = 5;
-	u8 data[3] = {0, };
-
-	if (info->device_ver != 0x40) { /* support CYPRESS MBR3155 */
-		dev_err(&client->dev, "%s: not support this module\n", __func__);
-		return;
-	}
-
-	if (info->ic_fw_ver <= CYPRESS_RECENT_BACK_REPORT_FW_VER) {
-		dev_err(&client->dev, "%s: not support this version\n", __func__);
-		return;
-	}
-
-	while (retry--) {
-		data[0] = TK_CMD_DUAL_DETECTION;
-		data[1] = 0x00;
-		data[2] = TK_BIT_DETECTION_CONFIRM;
-
-		ret = i2c_smbus_write_i2c_block_data(client, CYPRESS_GEN, 3, &data[0]);
-		if (ret < 0) {
-			dev_err(&client->dev, "%s: i2c write error. (%d)\n", __func__, ret);
-			msleep(30);
-			continue;
-		}
-		msleep(30);
-
-		data[0] = CYPRESS_DETECTION_FLAG;
-
-		ret = i2c_smbus_read_i2c_block_data(client, data[0], 1, &data[1]);
-		if (ret < 0) {
-			dev_err(&client->dev, "%s: i2c read error. (%d)\n", __func__, ret);
-			msleep(30);
-			continue;
-		}
-
-		if (data[1] != 1) {
-			dev_err(&client->dev,
-				"%s: interrupt set: 0x%X, failed.\n", __func__, data[1]);
-			continue;
-		}
-
-		dev_info(&client->dev, "%s: interrupt set: 0x%X\n", __func__, data[1]);
-		break;
-	}
-
-}
-
 static int tkey_i2c_check(struct cypress_touchkey_info *info)
 {
 	struct i2c_client *client = info->client;
@@ -181,9 +148,6 @@ static int tkey_i2c_check(struct cypress_touchkey_info *info)
 	else
 		dev_info(&client->dev, "%s: CY device(0x%02x) is not supported ver.\n"
 					,__func__,info->device_ver);
-
-	/* CYPRESS Firmware setting interrupt type : dual or single interrupt */
-	cypress_touchkey_interrupt_set_dual(info->client);
 
 	/* Read internal checksum*/
 #ifdef CRC_CHECK_INTERNAL
@@ -326,9 +290,6 @@ static void cypress_touchkey_reset(struct cypress_touchkey_info *info)
 
 	cypress_power_onoff(&info->client->dev, 1);
 	msleep(200);
-
-	/* CYPRESS Firmware setting interrupt type : dual or single interrupt */
-	cypress_touchkey_interrupt_set_dual(info->client);
 
 	info->enabled = true;
 
@@ -620,6 +581,7 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 	int press;
 	int ret;
 	int i;
+	struct timeval time_now_tk_mt;
 
 	ret = gpio_get_value(info->pdata->gpio_int);
 	if (ret) {
@@ -644,73 +606,137 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 	}
 
 	buf[0] = ret;
+	press = !(buf[0] & PRESS_BIT_MASK);
+	code = (int)(buf[0] & KEYCODE_BIT_MASK) - 1;
+	dev_info(&info->client->dev,
+			"%s: %s key %s. fw=0x%x, md=0x%x \n", __func__,
+			code ? "back" : "recent", press ? "pressed" : "released",
+			info->ic_fw_ver, info->module_ver);
 
-	/* L OS support Screen Pinning feature.
-	 * "recent + back key" event is CombinationKey for exit Screen Pinning mode.
-	 * If touchkey firmware version is higher than CYPRESS_RECENT_BACK_REPORT_FW_VER,
-	 * touchkey can make interrupt "back key" and "recent key" in same time.
-	 * lower version firmware can make interrupt only one key event.
-	 */
-	if (info->ic_fw_ver >= CYPRESS_RECENT_BACK_REPORT_FW_VER) {
-		int menu_data = buf[0] & 0x3;
-		int back_data = (buf[0] >> 2) & 0x3;
-		u8 menu_press = menu_data % 2;
-		u8 back_press = back_data % 2;
-
-		if (menu_data)
-			input_report_key(info->input_dev, info->keycode[0], menu_press);
-		if (back_data)
-			input_report_key(info->input_dev, info->keycode[1], back_press);
-
-		press = menu_press | back_press;
-
-#ifndef CONFIG_SAMSUNG_PRODUCT_SHIP
+	if (code < 0) {
 		dev_info(&info->client->dev,
-				"%s: %s%s%X, fw_ver: 0x%x, modue_ver: 0x%x\n", __func__,
-				menu_data ? (menu_press ? "menu P " : "menu R ") : "",
-				back_data ? (back_press ? "back P " : "back R ") : "",
-				buf[0], info->ic_fw_ver, info->module_ver);
-#else
-		dev_info(&info->client->dev, "%s: key %s%s fw_ver: 0x%x, modue_ver: 0x%x\n", __func__,
-				menu_data ? (menu_press ? "P" : "R") : "",
-				back_data ? (back_press ? "P" : "R") : "",
-				info->ic_fw_ver, info->module_ver);
-#endif
-
-	} else {
-		press = !(buf[0] & PRESS_BIT_MASK);
-		code = (int)(buf[0] & KEYCODE_BIT_MASK) - 1;
-#ifndef CONFIG_SAMSUNG_PRODUCT_SHIP
-		dev_info(&info->client->dev,
-				"%s: %s key %s. fw=0x%x, md=0x%x \n", __func__,
-				code ? "back" : "recent", press ? "pressed" : "released",
-				info->ic_fw_ver, info->module_ver);
-#else
-		dev_info(&info->client->dev,
-				"%s: %s. fw=0x%x, md=0x%x \n", __func__,
-				press ? "pressed" : "released",
-				info->ic_fw_ver, info->module_ver);
-#endif
-		if (code < 0) {
-			dev_info(&info->client->dev,
-					"%s, not profer interrupt 0x%2X.(release all finger)\n",
-					__func__, buf[0]);
-			/* need release all finger function. */
-			for (i = 0; i < info->pdata->keycodes_size; i++) {
-				input_report_key(info->input_dev, info->keycode[i], 0);
-				input_sync(info->input_dev);
-			}
-			goto out;
+				"%s, not profer interrupt 0x%2X.(release all finger)\n",
+				__func__, buf[0]);
+		/* need release all finger function. */
+		for (i = 0; i < info->pdata->keycodes_size; i++) {
+			input_report_key(info->input_dev, info->keycode[i], 0);
+			input_sync(info->input_dev);
 		}
-
-		input_report_key(info->input_dev, info->keycode[code], press);
+		goto out;
 	}
+	
+	if (flg_skip_next) {
+		// avoid sending the key-up event.
+		flg_skip_next = false;
+		return IRQ_HANDLED;
+	}
+	
+	if (press  // touchkey down-state
+		&& (
+			(code == 1 && sttg_tk_mt_key1_mode)  // key1 is being pressed, is it enabled?
+			|| (code == 2 && sttg_tk_mt_key2_mode)  // key2 is being pressed, is it enabled?
+			)
+		) {
+		
+		// get the time.
+		do_gettimeofday(&time_now_tk_mt);
+		
+		time_since_tk_mt_lastpress = (time_now_tk_mt.tv_sec - time_tk_lastpress.tv_sec) * MSEC_PER_SEC +
+		(time_now_tk_mt.tv_usec - time_tk_lastpress.tv_usec) / USEC_PER_MSEC;
+		
+		// save the time now that we've read it.
+		do_gettimeofday(&time_tk_lastpress);
+		
+		if (time_since_tk_mt_lastpress < sttg_tk_mt_minimum_between  // not too fast
+			|| time_since_tk_mt_lastpress > sttg_tk_mt_maximum_between   // not too slow
+			|| code != tk_mt_last_keycode_type  // the same keycode must bind them all. right, frodo?
+			) {
+			// event is invalid, start a new one.
+			
+			printk(KERN_DEBUG "[TOUCHKEY/mt] first press (lastpress: %d, keycode: %d)\n", time_since_tk_mt_lastpress, code);
+			ctr_tk_mt_presses = 1;
+			
+			// save which key this event is bound to.
+			tk_mt_last_keycode_type = code;
+			
+			// ditch this press, and the up-state following it.
+			flg_skip_next = true;
+			return IRQ_HANDLED;
+		}
+		
+		if (
+			(code == 1 && ctr_tk_mt_presses == sttg_tk_mt_key1_mode)  // check for key1 nth
+			|| (code == 2 && ctr_tk_mt_presses == sttg_tk_mt_key2_mode)  // check for key2 nth
+			) {
+			// this is the nth press, so let it through.
+			
+			printk(KERN_DEBUG "[TOUCHKEY/mt] nth press found (lastpress: %d, keycode: %d)\n", time_since_tk_mt_lastpress, code);
+			
+			// this shouldn't matter, but just to be safe reset it.
+			ctr_tk_mt_presses = 0;
+			
+		} else {
+			// this isn't the nth press. ignore it.
+			
+			// increment counter.
+			ctr_tk_mt_presses++;
+			printk(KERN_DEBUG "[TOUCHKEY/mt] ignoring press %d (%d - %d)\n", ctr_tk_mt_presses, code, press);
+			
+			// ditch the up-state following this press.
+			flg_skip_next = true;
+			
+			// ditch this press.
+			return IRQ_HANDLED;
+		}
+	}
+	
+	tk_key_keycode = info->keycode[code];
+	
+	if (code == 0) {
+		
+		if (sttg_tk_key1_key_code) {
+			// custom keycode.
+			
+			tk_key_keycode = sttg_tk_key1_key_code;
+			pr_info("[TK/custom] SET - key1 set to: %d\n", tk_key_keycode);
+			
+			/*if (press && (sttg_tk_key1_key_code >= 900 || sttg_tk_key1_key_code == KEY_POWER)) {
+				// user wants to use a special keycode.
+				
+				press_button(sttg_tk_key1_key_code, false, true, false, false);
+				
+				// stop now, since we've already pressed a button.
+				return IRQ_HANDLED;
+			}*/
+		}
+	} else if (code == 1) {
+		
+		if (sttg_tk_key2_key_code) {
+			// custom keycode.
+			
+			tk_key_keycode = sttg_tk_key2_key_code;
+			pr_info("[TK/custom] SET - key2 set to: %d\n", tk_key_keycode);
+			
+			/*if (press && (sttg_tk_key2_key_code >= 900 || sttg_tk_key2_key_code == KEY_POWER)) {
+				// user wants to use a special keycode.
+				
+				press_button(sttg_tk_key2_key_code, false, true, false, false);
+				
+				// stop now, since we've already pressed a button.
+				return IRQ_HANDLED;
+			}*/
+		}
+	}
+	
+	pr_info("[TK] code: %d, press: %d, keycode: %d, sent: %d \n", code, press, info->keycode[code], tk_key_keycode);
+
+	input_report_key(info->input_dev, tk_key_keycode, press);
 	input_sync(info->input_dev);
 
-#ifdef TKEY_BOOSTER
+/*#ifdef TKEY_BOOSTER
 	if (info->tkey_booster->dvfs_set)
 		info->tkey_booster->dvfs_set(info->tkey_booster, !!press);
-#endif
+#endif*/
 
 out:
 	return IRQ_HANDLED;
@@ -1494,6 +1520,150 @@ static ssize_t cypress_touchkey_read_register(struct device *dev,
 	return size;
 }
 
+static ssize_t tk_key1_key_code_show(struct device *dev,
+									 struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d\n", sttg_tk_key1_key_code);
+	return ret;
+}
+
+static ssize_t tk_key1_key_code_store(struct device *dev,
+									  struct device_attribute *attr, const char *buf, size_t size)
+{
+	int data, ret;
+	
+	ret = sscanf(buf, "%d\n", &data);
+	if (unlikely(ret != 1 || data < 0)) {
+		return -EINVAL;
+	}
+	
+	sttg_tk_key1_key_code = data;
+	pr_info("[TK/custom] STORE - sttg_tk_key1_key_code has been set to: %d\n", data);
+	
+	return size;
+}
+
+static ssize_t tk_key2_key_code_show(struct device *dev,
+									 struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d\n", sttg_tk_key2_key_code);
+	return ret;
+}
+
+static ssize_t tk_key2_key_code_store(struct device *dev,
+									  struct device_attribute *attr, const char *buf, size_t size)
+{
+	int data, ret;
+	
+	ret = sscanf(buf, "%d\n", &data);
+	if (unlikely(ret != 1 || data < 0)) {
+		return -EINVAL;
+	}
+	
+	sttg_tk_key2_key_code = data;
+	pr_info("[TK/custom] STORE - sttg_tk_key2_key_code has been set to: %d\n", data);
+	
+	return size;
+}
+
+static ssize_t tk_mt_key1_mode_show(struct device *dev,
+									struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d\n", sttg_tk_mt_key1_mode);
+	return ret;
+}
+
+static ssize_t tk_mt_key1_mode_store(struct device *dev,
+									 struct device_attribute *attr, const char *buf, size_t size)
+{
+	int data, ret;
+	
+	ret = sscanf(buf, "%d\n", &data);
+	if (unlikely(ret != 1 || data < 0 || data > 5)) {
+		return -EINVAL;
+	}
+	
+	sttg_tk_mt_key1_mode = data;
+	pr_info("[TK/custom] STORE - sttg_tk_mt_key1_mode has been set to: %d\n", data);
+	
+	return size;
+}
+
+static ssize_t tk_mt_key2_mode_show(struct device *dev,
+									struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d\n", sttg_tk_mt_key2_mode);
+	return ret;
+}
+
+static ssize_t tk_mt_key2_mode_store(struct device *dev,
+									 struct device_attribute *attr, const char *buf, size_t size)
+{
+	int data, ret;
+	
+	ret = sscanf(buf, "%d\n", &data);
+	if (unlikely(ret != 1 || data < 0 || data > 5)) {
+		return -EINVAL;
+	}
+	
+	sttg_tk_mt_key2_mode = data;
+	pr_info("[TK/custom] STORE - sttg_tk_mt_key2_mode has been set to: %d\n", data);
+	
+	return size;
+}
+
+static ssize_t tk_mt_minimum_between_show(struct device *dev,
+										  struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d\n", sttg_tk_mt_minimum_between);
+	return ret;
+}
+
+static ssize_t tk_mt_minimum_between_store(struct device *dev,
+										   struct device_attribute *attr, const char *buf, size_t size)
+{
+	int data, ret;
+	
+	ret = sscanf(buf, "%d\n", &data);
+	if (unlikely(ret != 1 || data < 0 || data > 5000)) {
+		return -EINVAL;
+	}
+	
+	sttg_tk_mt_minimum_between = data;
+	pr_info("[TK/custom] STORE - sttg_tk_mt_minimum_between has been set to: %d\n", data);
+	
+	return size;
+}
+
+static ssize_t tk_mt_maximum_between_show(struct device *dev,
+										  struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d\n", sttg_tk_mt_maximum_between);
+	return ret;
+}
+
+static ssize_t tk_mt_maximum_between_store(struct device *dev,
+										   struct device_attribute *attr, const char *buf, size_t size)
+{
+	int data, ret;
+	
+	ret = sscanf(buf, "%d\n", &data);
+	if (unlikely(ret != 1 || data < 0 || data > 5000)) {
+		return -EINVAL;
+	}
+	
+	sttg_tk_mt_maximum_between = data;
+	pr_info("[TK/custom] STORE - sttg_tk_mt_maximum_between has been set to: %d\n", data);
+	
+	return size;
+}
+
 static DEVICE_ATTR(touchkey_firm_update_status, S_IRUGO | S_IWUSR | S_IWGRP,
 		cypress_touchkey_firm_status_show, NULL);
 static DEVICE_ATTR(touchkey_firm_version_panel, S_IRUGO,
@@ -1561,6 +1731,13 @@ static DEVICE_ATTR(boost_level,
 static DEVICE_ATTR(read_reg, S_IRUGO | S_IWUSR | S_IWGRP, NULL,
 		cypress_touchkey_read_register);
 
+static DEVICE_ATTR(tk_key1_key_code, S_IRUGO | S_IWUSR | S_IWGRP, tk_key1_key_code_show, tk_key1_key_code_store);
+static DEVICE_ATTR(tk_key2_key_code, S_IRUGO | S_IWUSR | S_IWGRP, tk_key2_key_code_show, tk_key2_key_code_store);
+static DEVICE_ATTR(tk_mt_key1_mode, S_IRUGO | S_IWUSR | S_IWGRP, tk_mt_key1_mode_show, tk_mt_key1_mode_store);
+static DEVICE_ATTR(tk_mt_key2_mode, S_IRUGO | S_IWUSR | S_IWGRP, tk_mt_key2_mode_show, tk_mt_key2_mode_store);
+static DEVICE_ATTR(tk_mt_minimum_between, S_IRUGO | S_IWUSR | S_IWGRP, tk_mt_minimum_between_show, tk_mt_minimum_between_store);
+static DEVICE_ATTR(tk_mt_maximum_between, S_IRUGO | S_IWUSR | S_IWGRP, tk_mt_maximum_between_show, tk_mt_maximum_between_store);
+
 static struct attribute *touchkey_attributes[] = {
 	&dev_attr_touchkey_firm_update_status.attr,
 	&dev_attr_touchkey_firm_version_panel.attr,
@@ -1582,6 +1759,12 @@ static struct attribute *touchkey_attributes[] = {
 	&dev_attr_touchkey_autocal_start.attr,
 	&dev_attr_autocal_enable.attr,
 	&dev_attr_autocal_stat.attr,
+	&dev_attr_tk_key1_key_code.attr,
+	&dev_attr_tk_key2_key_code.attr,
+	&dev_attr_tk_mt_key1_mode.attr,
+	&dev_attr_tk_mt_key2_mode.attr,
+	&dev_attr_tk_mt_minimum_between.attr,
+	&dev_attr_tk_mt_maximum_between.attr,
 #ifdef CONFIG_GLOVE_TOUCH
 	&dev_attr_glove_mode.attr,
 #endif
@@ -2018,6 +2201,15 @@ static int cypress_touchkey_probe(struct i2c_client *client,
 		info->keycode[i] = pdata->touchkey_keycode[i];
 		set_bit(info->keycode[i], input_dev->keybit);
 	}
+	
+	// define extra keys for various android functions.
+	set_bit(KEY_MENU, input_dev->keybit);
+	set_bit(KEY_POWER, input_dev->keybit);
+	set_bit(KEY_FIND, input_dev->keybit);
+	set_bit(KEY_SEARCH, input_dev->keybit);
+	set_bit(KEY_CAMERA, input_dev->keybit);
+	set_bit(KEY_F17, input_dev->keybit);
+	set_bit(172, input_dev->keybit);  // android home
 
 	i2c_set_clientdata(client, info);
 
@@ -2238,9 +2430,6 @@ static int cypress_input_open(struct input_dev *dev)
 
 	cypress_power_onoff(&info->client->dev, 1);
 	msleep(150);
-
-	/* CYPRESS Firmware setting interrupt type : dual or single interrupt */
-	cypress_touchkey_interrupt_set_dual(info->client);
 
 	info->enabled = true;
 
