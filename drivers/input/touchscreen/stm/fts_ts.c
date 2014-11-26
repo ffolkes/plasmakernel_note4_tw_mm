@@ -85,7 +85,11 @@ struct fts_touchkey fts_touchkeys[] = {
 };
 #endif
 
+
 extern int get_lcd_attached(char*);
+
+extern bool flg_voice_allowturnoff;
+
 extern int s2w_switch;
 
 extern int boot_mode_recovery;
@@ -1279,6 +1283,9 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			}*/
 				
 			//pr_info("[tsp] finger: %d IN\n", TouchID);
+				
+			// reset the voice flag since someone is using it.
+			flg_voice_allowturnoff = false;
 
 			info->touch_count++;
 
@@ -2886,6 +2893,9 @@ static int fts_stop_device(struct fts_ts_info *info)
 		dev_err(&info->client->dev, "%s already power off\n", __func__);
 		goto out;
 	}
+	
+	// this is just piggybacked here.
+	flg_voice_allowturnoff = false;
 
 	if (info->lowpower_mode) {
 #ifdef FTS_ADDED_RESETCODE_IN_LPLM
