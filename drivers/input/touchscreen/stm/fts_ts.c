@@ -86,10 +86,15 @@ struct fts_touchkey fts_touchkeys[] = {
 #endif
 
 extern int get_lcd_attached(char*);
+extern int s2w_switch;
+
 extern int boot_mode_recovery;
 #ifdef CONFIG_SAMSUNG_LPM_MODE
 extern int poweroff_charging;
 #endif
+
+static bool flg_enable_hover = true;
+bool flg_tsp_always_on = false;
 
 #ifdef USE_OPEN_CLOSE
 static int fts_input_open(struct input_dev *dev);
@@ -119,6 +124,18 @@ static int fts_stop_device(struct fts_ts_info *info);
 static int fts_start_device(struct fts_ts_info *info);
 static int fts_irq_enable(struct fts_ts_info *info, bool enable);
 void fts_release_all_finger(struct fts_ts_info *info);
+
+static ssize_t enable_hover_store(struct device *dev,
+								  struct device_attribute *attr, const char *buf, size_t size);
+
+static ssize_t enable_hover_show(struct device *dev,
+								 struct device_attribute *attr, char *buf);
+
+static struct device_attribute tsp_attrs[] = {
+	__ATTR(enable_hover, (S_IRUGO | S_IWUSR | S_IWGRP),
+		   enable_hover_show,
+		   enable_hover_store),
+};
 
 #if defined(CONFIG_SECURE_TOUCH)
 static void fts_secure_touch_notify(struct fts_ts_info *info);
@@ -253,6 +270,35 @@ static ssize_t fts_secure_touch_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%u", val);
 }
 #endif
+
+static ssize_t enable_hover_show(struct device *dev,
+							   struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", flg_enable_hover);
+}
+
+static ssize_t enable_hover_store(struct device *dev,
+								struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fts_ts_info *info = dev_get_drvdata(dev);
+	unsigned int ret;
+	unsigned int data;
+	
+	ret = sscanf(buf, "%u\n", &data);
+	
+	if(ret && data >= 0) {
+		
+		if (data > 1)
+			data = 1;
+		
+		flg_enable_hover = data;
+		info->hover_enabled = data;
+		
+		pr_info("[tsp] STORE - flg_enable_hover has been set to: %d\n", data);
+	}
+	
+	return size;
+}
 
 static int fts_write_reg(struct fts_ts_info *info,
 		  unsigned char *reg, unsigned short num_com)
@@ -1059,6 +1105,8 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 						   MT_TOOL_FINGER, 0);
 			info->hover_present = false;
 		}
+		
+		//pr_info("[tsp] EventID: %d\n", EventID);
 
 		switch (EventID) {
 		case EVENTID_NO_EVENT:
@@ -1195,6 +1243,9 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			     ((data[3 + EventNum * FTS_EVENT_SIZE]) << 4));
 
 			z = data[5 + EventNum * FTS_EVENT_SIZE];
+				
+			//pr_info("[tsp/hover] finger: %d, x: %d, y: %d, z: %d\n",
+			//		TouchID, x, y, (255 - z));
 
 			input_mt_slot(info->input_dev, 0);
 			input_mt_report_slot_state(info->input_dev,
@@ -1221,20 +1272,24 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			break;
 
 		case EVENTID_ENTER_POINTER:
-
-			if(info->fts_power_mode == FTS_POWER_STATE_LOWPOWER){
+			
+			// don't ignore events if the screen is off.
+			/*if(info->fts_power_mode == FTS_POWER_STATE_LOWPOWER){
 				break;
-			}
+			}*/
+				
+			//pr_info("[tsp] finger: %d IN\n", TouchID);
 
 			info->touch_count++;
 
 		case EVENTID_MOTION_POINTER:
 
-			if(info->fts_power_mode == FTS_POWER_STATE_LOWPOWER){
+            // don't ignore events if the screen is off.
+            /*if(info->fts_power_mode == FTS_POWER_STATE_LOWPOWER){
 				dev_err(&info->client->dev, "%s %d: low power mode\n", __func__, __LINE__);
 				fts_release_all_finger(info);
 				break;
-			}
+			}*/
 
 			if (info->touch_count == 0) {
 				dev_err(&info->client->dev, "%s %d: count 0\n", __func__, __LINE__);
@@ -1267,6 +1322,9 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 #else
 			z = data[7 + EventNum * FTS_EVENT_SIZE];
 #endif
+			//pr_info("[tsp] finger: %d, x: %d, y: %d, bw: %d, bh: %d, sum: %d, palm: %d\n",
+			//		TouchID, x, y, bw, bh, sumsize, palm);
+				
 			input_mt_slot(info->input_dev, TouchID);
 			input_mt_report_slot_state(info->input_dev,
 						   MT_TOOL_FINGER,
@@ -1295,10 +1353,13 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			break;
 
 		case EVENTID_LEAVE_POINTER:
-
-			if(info->fts_power_mode == FTS_POWER_STATE_LOWPOWER){
+				
+			//pr_info("[tsp] finger: %d OUT\n", TouchID);
+				
+			// don't ignore events if the screen is off.
+			/*if(info->fts_power_mode == FTS_POWER_STATE_LOWPOWER){
 				break;
-			}
+            }*/
 
 			if (info->touch_count <= 0) {
 				dev_err(&info->client->dev, "%s %d: count 0\n", __func__, __LINE__);
@@ -1489,44 +1550,30 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 #endif
 
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-		if (EventID == EVENTID_ENTER_POINTER)
-			dev_info(&info->client->dev,
+		if (EventID == EVENTID_ENTER_POINTER) {
+			/*dev_info(&info->client->dev,
 				"[P] tID:%d x:%d y:%d w:%d h:%d z:%d s:%d p:%d tc:%d tm:%d\n",
-				TouchID, x, y, bw, bh, z, sumsize, palm, info->touch_count, info->touch_mode);
-		else if (EventID == EVENTID_HOVER_ENTER_POINTER)
-			dev_info(&info->client->dev,
+				TouchID, x, y, bw, bh, z, sumsize, palm, info->touch_count, info->touch_mode);*/
+		} else if (EventID == EVENTID_HOVER_ENTER_POINTER) {
+			/*dev_info(&info->client->dev,
 				"[HP] tID:%d x:%d y:%d z:%d\n",
-				TouchID, x, y, z);
+				TouchID, x, y, z);*/
 #else
 		if (EventID == EVENTID_ENTER_POINTER) {
 			dev_info(&info->client->dev,
-				"[P] tID:%d loc:%c%c tc:%d tm:%d\n",
-				TouchID,
-				location_detect(info, y, 1), location_detect(info, x, 0),
-				info->touch_count, info->touch_mode);
-		}
-		else if (EventID == EVENTID_HOVER_ENTER_POINTER)
+				"[P] tID:%d tc:%d tm:%d\n",
+				TouchID, info->touch_count, info->touch_mode);
+		} else if (EventID == EVENTID_HOVER_ENTER_POINTER) {
 			dev_info(&info->client->dev,
 				"[HP] tID:%d\n", TouchID);
 #endif
-		else if (EventID == EVENTID_LEAVE_POINTER) {
-#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-			dev_info(&info->client->dev,
-				"[R] tID:%d mc: %d tc:%d lx:%d ly:%d Ver[%02X%04X%01X%01X%01X]\n",
+		} else if (EventID == EVENTID_LEAVE_POINTER) {
+			/*dev_info(&info->client->dev,
+				"[R] tID:%d mc: %d tc:%d lx:%d ly:%d Ver[%02X%04X%01X%01X]\n",
 				TouchID, info->finger[TouchID].mcount, info->touch_count,
 				info->finger[TouchID].lx, info->finger[TouchID].ly,
 				info->panel_revision, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled, info->mainscr_disable);
-#else
-			dev_info(&info->client->dev,
-				"[R] tID:%d loc:%c%c mc: %d tc:%d Ver[%02X%04X%01X%01X%01X]\n",
-				TouchID,
-				location_detect(info, info->finger[TouchID].ly, 1),
-				location_detect(info, info->finger[TouchID].lx, 0),
-				info->finger[TouchID].mcount, info->touch_count,
-				info->panel_revision, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled, info->mainscr_disable);
-#endif
+				info->flip_enable, info->mshover_enabled);*/
 			info->finger[TouchID].mcount = 0;
 		}/* else if (EventID == EVENTID_HOVER_LEAVE_POINTER) {
 			if (info->hover_present) {
@@ -1663,6 +1710,8 @@ static irqreturn_t fts_interrupt_handler(int irq, void *handle)
 #endif
 
 	evtcount = 0;
+	
+	//pr_info("[tsp] Event\n");
 
 	if (info->lowpower_mode) {
 		if (info->fts_power_mode == FTS_POWER_STATE_LOWPOWER_SUSPEND) {
@@ -1711,7 +1760,7 @@ static int fts_irq_enable(struct fts_ts_info *info,
 			return retval;
 
 		retval = request_threaded_irq(info->irq, NULL,
-				fts_interrupt_handler, IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+				fts_interrupt_handler, IRQF_TRIGGER_LOW | IRQF_ONESHOT | IRQF_NO_SUSPEND,
 				FTS_TS_DRV_NAME, info);
 		if (retval < 0) {
 			dev_info(&info->client->dev,
@@ -2378,6 +2427,16 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 		}
 	}
 #endif
+	
+	for (i = 0; i < ARRAY_SIZE(tsp_attrs); i++) {
+		ret = sysfs_create_file(&info->input_dev->dev.kobj,
+								&tsp_attrs[i].attr);
+		if (ret < 0) {
+			dev_err(&info->client->dev,
+					"%s: Failed to create sysfs attributes\n",
+					__func__);
+		}
+	}
 
 #if defined(CONFIG_SECURE_TOUCH)
 	for (i = 0; i < ARRAY_SIZE(attrs); i++) {
@@ -2451,7 +2510,7 @@ static int fts_remove(struct i2c_client *client)
 	fts_command(info, FLUSHBUFFER);
 
 	fts_irq_enable(info, false);
-
+    
 #if defined(CONFIG_SECURE_TOUCH)
 	for (i = 0; i < ARRAY_SIZE(attrs); i++) {
 		sysfs_remove_file(&info->input_dev->dev.kobj,
@@ -2514,6 +2573,7 @@ static int fts_input_open(struct input_dev *dev)
 {
 	struct fts_ts_info *info = input_get_drvdata(dev);
 	int retval;
+	unsigned char regAdd[4] = {0xB0, 0x01, 0x29, 0x41};
 
 	dev_dbg(&info->client->dev, "%s\n", __func__);
 
@@ -2531,13 +2591,16 @@ static int fts_input_open(struct input_dev *dev)
 	tsp_debug_err(true, &info->client->dev, "FTS cmd after wakeup : h%d \n",
 			info->retry_hover_enable_after_wakeup);
 
-	if(info->retry_hover_enable_after_wakeup == 1){
-		unsigned char regAdd[4] = {0xB0, 0x01, 0x29, 0x41};
+	if(info->retry_hover_enable_after_wakeup == 1 || flg_enable_hover){
+		pr_info("[tsp] hover on\n");
 		fts_write_reg(info, &regAdd[0], 4);
 		fts_command(info, FTS_CMD_HOVER_ON);
 		info->hover_ready = false;
 		info->hover_enabled = true;
 	}
+	
+	info->fts_change_scan_rate(info, FTS_CMD_FAST_SCAN);
+	
 out:
 	return retval;
 }
@@ -2545,12 +2608,23 @@ out:
 static void fts_input_close(struct input_dev *dev)
 {
 	struct fts_ts_info *info = input_get_drvdata(dev);
+	unsigned char Dly_regAdd[4] = {0xB0, 0x01, 0x72, 0x08};
 
 	dev_dbg(&info->client->dev, "%s\n", __func__);
 
 #ifdef USE_OPEN_DWORK
 	cancel_delayed_work(&info->open_work);
 #endif
+	
+	if (flg_enable_hover) {
+		pr_info("[tsp] hover off\n");
+		fts_write_reg(info, &Dly_regAdd[0], 4);
+		fts_command(info, FTS_CMD_HOVER_OFF);
+		info->hover_enabled = false;
+		info->hover_ready = false;
+	}
+	
+	info->fts_change_scan_rate(info, FTS_CMD_USLOW_SCAN);
 
 	fts_stop_device(info);
 
@@ -2794,6 +2868,12 @@ static void fts_secure_touch_stop(struct fts_ts_info *info, int blocking)
 
 static int fts_stop_device(struct fts_ts_info *info)
 {
+	if (s2w_switch > 0 || flg_tsp_always_on) {
+		info->lowpower_mode = true;
+	} else {
+		info->lowpower_mode = false;
+	}
+	
 	dev_info(&info->client->dev, "%s %s\n",
 			__func__, info->lowpower_mode ? "enter low power mode" : "");
 
@@ -2852,6 +2932,7 @@ static int fts_stop_device(struct fts_ts_info *info)
 #endif
 
 	} else {
+		
 		fts_interrupt_set(info, INT_DISABLE);
 		disable_irq(info->irq);
 
@@ -2952,11 +3033,12 @@ static int fts_start_device(struct fts_ts_info *info)
 		}
 #endif
 		fts_command(info, FLUSHBUFFER);
-#endif
+
 		if (device_may_wakeup(&info->client->dev))
 			disable_irq_wake(info->client->irq);
 
 	} else {
+		
 		fts_power_ctrl(info, true);
 
 		info->touch_stopped = false;
