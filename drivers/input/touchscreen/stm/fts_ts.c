@@ -97,7 +97,7 @@ extern int boot_mode_recovery;
 extern int poweroff_charging;
 #endif
 
-static bool flg_enable_hover = true;
+static bool flg_enable_hover = false;
 bool flg_tsp_always_on = false;
 
 #ifdef USE_OPEN_CLOSE
