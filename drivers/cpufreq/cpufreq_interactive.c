@@ -727,7 +727,11 @@ static void cpufreq_interactive_timer(unsigned long data)
 	}
 
 	if (pcpu->target_freq == new_freq &&
+<<<<<<< HEAD
 		!(need_retry & (1 << data))) {
+=======
+			pcpu->target_freq <= pcpu->policy->cur) {
+>>>>>>> 5d7e30b... cpufreq: interactive: don't skip waking up speedchange_task if target_freq > policy->cur
 		trace_cpufreq_interactive_already(
 			data, cpu_load, pcpu->target_freq,
 			pcpu->policy->cur, new_freq);
