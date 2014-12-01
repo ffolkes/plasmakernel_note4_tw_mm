@@ -85,9 +85,11 @@ struct fts_touchkey fts_touchkeys[] = {
 };
 #endif
 
-
 extern int get_lcd_attached(char*);
 
+extern void plasma_process_tsp_touch_enter(int finger, int touchcount);
+extern int plasma_process_tsp_touch_move(int finger, int x, int y, int pressure);
+extern void plasma_process_tsp_touch_exit(int finger, int touchcount);
 extern bool flg_voice_allowturnoff;
 
 extern int s2w_switch;
@@ -1288,6 +1290,8 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			flg_voice_allowturnoff = false;
 
 			info->touch_count++;
+				
+			plasma_process_tsp_touch_enter(TouchID, info->touch_count);
 
 		case EVENTID_MOTION_POINTER:
 
@@ -1332,6 +1336,8 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 			//pr_info("[tsp] finger: %d, x: %d, y: %d, bw: %d, bh: %d, sum: %d, palm: %d\n",
 			//		TouchID, x, y, bw, bh, sumsize, palm);
 				
+			plasma_process_tsp_touch_move(TouchID, x, y, max(bw, bh));
+				
 			input_mt_slot(info->input_dev, TouchID);
 			input_mt_report_slot_state(info->input_dev,
 						   MT_TOOL_FINGER,
@@ -1373,8 +1379,10 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 				fts_release_all_finger(info);
 				break;
 			}
-
+				
 			info->touch_count--;
+				
+			plasma_process_tsp_touch_exit(TouchID, info->touch_count);
 
 			input_mt_slot(info->input_dev, TouchID);
 
