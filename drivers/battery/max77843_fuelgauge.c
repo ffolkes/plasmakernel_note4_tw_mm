@@ -19,6 +19,7 @@
 #include <linux/seq_file.h>
 #include <linux/battery/fuelgauge/max77843_fuelgauge.h>
 
+extern unsigned int plasma_fuelgauge;
 extern bool sec_bat_check_jig_status(void);
 extern void board_fuelgauge_init(void *data);
 
@@ -1272,6 +1273,8 @@ static void max77843_fg_get_scaled_capacity(
 		__func__, fuelgauge->pre_soc, val->intval);
 
 	fuelgauge->pre_soc = val->intval;
+
+	plasma_fuelgauge = val->intval / 10;
 
 	pr_info("%s: scaled capacity (%d.%d)\n",
 		 __func__, val->intval/10, val->intval%10);
