@@ -290,10 +290,9 @@ static struct dsi_cmd_desc mdni_tune_cmd[] = {
 };
 #endif
 
-static int mipi_samsung_disp_send_cmd(
+int mipi_samsung_disp_send_cmd(
 		enum mipi_samsung_cmd_list cmd,
 		unsigned char lock);
-int mdss_dsi_refresh_panel(unsigned char lock);
 extern void mdss_dsi_panel_touchsensing(int enable);
 int get_lcd_attached(void);
 int get_lcd_id(void);
@@ -1881,7 +1880,7 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 	}
 }
 
-static int mipi_samsung_disp_send_cmd(
+int mipi_samsung_disp_send_cmd(
 		enum mipi_samsung_cmd_list cmd,
 		unsigned char lock)
 {
@@ -2133,10 +2132,6 @@ err:
 		mutex_unlock(&msd.lock);
 
 	return -EINVAL;
-}
-
-int mdss_dsi_refresh_panel(unsigned char lock) {
-	return mipi_samsung_disp_send_cmd(PANEL_BRIGHT_CTRL, lock);
 }
 
 void mdss_dsi_panel_touchsensing(int enable)
