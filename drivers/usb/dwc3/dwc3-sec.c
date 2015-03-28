@@ -15,6 +15,13 @@
 #include <linux/power_supply.h>
 #endif
 
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_USB30_MENU
+extern u8	usb30en;
+#endif
+
+extern unsigned int sttg_pu_cablemode;
+extern bool pu_checkLockout(void);
+
 struct dwc3_msm;
 struct dwc3_sec {
 	struct notifier_block nb;
@@ -93,6 +100,38 @@ static struct sec_cable support_cable_list[] = {
 	{ .cable_type = EXTCON_HMT, },
 #endif
 };
+
+
+extern void set_ncm_ready(bool ready);
+
+static void sec_usb_work(int usb_mode)
+{
+	struct power_supply *psy;
+
+	psy = power_supply_get_by_name("dwc-usb");
+	pr_info("usb: dwc3 power supply set(%d)", usb_mode);
+	if (psy)
+		power_supply_set_present(psy, usb_mode);
+	else
+		pr_err("usb: dwc-usb power supply is null!\n");
+}
+
+void sec_usb_toggle(int mode)
+{
+	struct otg_notify *n = get_otg_notify();
+	
+	if (mode) {
+		pr_info("[sec-cable/sec_usb_toggle] toggling on");
+		send_otg_notify(n, NOTIFY_EVENT_VBUS, 1);
+		sec_usb_work(1);
+	} else {
+		pr_info("[sec-cable/sec_usb_toggle] toggling off");
+		sec_usb_work(0);
+		set_ncm_ready(false);
+		send_otg_notify(n, NOTIFY_EVENT_VBUS, 0);
+	}
+}
+EXPORT_SYMBOL(sec_usb_toggle);
 
 static void sec_cable_event_worker(struct work_struct *work)
 {
@@ -173,6 +212,10 @@ static int sec_cable_notifier(struct notifier_block *nb,
 
 	cable->cable_state = stat;
 	pr_info("sec_cable_notifier: state %lu\n", stat);
+	
+	if (pu_checkLockout() && sttg_pu_cablemode == 1 && stat) {
+		return NOTIFY_DONE;
+	}
 
 	queue_work(system_nrt_wq, &cable->work);
 
