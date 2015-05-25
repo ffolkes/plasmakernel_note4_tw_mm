@@ -1,8 +1,8 @@
 VERSION = 3
 PATCHLEVEL = 10
-SUBLEVEL = 40
+SUBLEVEL = 0
 EXTRAVERSION =
-NAME = TOSSUG Baby Fish
+NAME = Unicycling Gorilla
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
@@ -192,8 +192,9 @@ SUBARCH := $(shell uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ \
 # "make" in the configured kernel build directory always uses that.
 # Default value for CROSS_COMPILE is not to prefix executables
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
-ARCH		?= $(SUBARCH)
-CROSS_COMPILE	?= $(CONFIG_CROSS_COMPILE:"%"=%)
+ARCH		?= arm
+CROSS_COMPILE	?= /Volumes/mtxdev_toolchains/arm-linux-gnueabihf-linaro_a15-4.9/bin/arm-linux-gnueabihf-
+#/opt/toolchains/arm-eabi-4.7/bin/arm-eabi-
 
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
@@ -351,10 +352,10 @@ CC		= $(srctree)/scripts/gcc-wrapper.py $(REAL_CC)
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
-CFLAGS_MODULE   =
+CFLAGS_MODULE   = -munaligned-access -fno-pic -mfpu=neon-vfpv4
 AFLAGS_MODULE   =
 LDFLAGS_MODULE  =
-CFLAGS_KERNEL	=
+CFLAGS_KERNEL	= -munaligned-access -mfpu=neon-vfpv4
 AFLAGS_KERNEL	=
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 
