@@ -30,7 +30,7 @@ modules.builtin
 *.lzma
 *.xz
 *.lzo
-*.lz4
+*.patch
 *.gcno
 
 #
@@ -59,7 +59,11 @@ include/linux/version.h
 include/generated
 arch/*/include/generated
 
+# stgit generated dirs
+patches-*
+
 # quilt's files
+patches
 series
 
 # cscope files
@@ -77,17 +81,9 @@ GTAGS
 \#*#
 arch/arm/boot/compressed/ashldi3.S
 arch/arm/boot/compressed/piggy.xzkern
-arch/arm/boot/zImage
-
-*.dtb
 
 */zImage
 */*.img
 */*.zip
 
 0
-out
-output
-
-boot.img
-recovery.img
