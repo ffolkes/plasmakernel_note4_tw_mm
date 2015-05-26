@@ -158,6 +158,11 @@ struct input_keymap_entry {
 
 #define EVIOCSCLOCKID		_IOW('E', 0xa0, int)			/* Set clockid to be used for timestamps */
 
+#ifdef CONFIG_INPUT_EXPANDED_ABS
+#define EVIOCGABS_LIMIT		(0x40)
+#define EVIOCGABS_CHG_LIMIT(nr)	(nr + EVIOCGABS_LIMIT)
+#endif
+
 /*
  * Device properties and quirks
  */
@@ -884,10 +889,17 @@ struct input_keymap_entry {
 #define ABS_MT_DISTANCE		0x3b	/* Contact hover distance */
 #define ABS_MT_TOOL_X		0x3c	/* Center X tool position */
 #define ABS_MT_TOOL_Y		0x3d	/* Center Y tool position */
+#define ABS_MT_ANGLE		0x3c	/* touch angle */
 #define ABS_MT_PALM		0x3e	/* palm touch */
-#define ABS_MT_GRIP		0x3f
-
+#define ABS_MT_COMPONENT	0x3e	/* touch component */
+#define ABS_MT_SUMSIZE		0x3f	/* touch sumsize */
+#ifdef CONFIG_INPUT_EXPANDED_ABS
+#define ABS_MT_GRIP		0x40
+#define ABS_MAX			0x4f
+#else
 #define ABS_MAX			0x3f
+#endif
+
 #define ABS_CNT			(ABS_MAX+1)
 
 /*
