@@ -148,6 +148,7 @@ enum max77843_led_pattern {
 };
 
 static struct device *led_dev;
+struct device *max77843led_dev;
 
 struct max77843_rgb {
 	struct led_classdev led[4];
@@ -159,7 +160,7 @@ struct max77843_rgb {
 #if defined (CONFIG_SEC_FACTORY)
 #if defined(CONFIG_SEC_TRLTE_PROJECT) || defined(CONFIG_SEC_TBLTE_PROJECT)
 static int jig_val;
-extern int get_lcd_attached(void);
+extern int get_lcd_attached(char*);
 
 static int __init muic_get_jig_status(char *mode)
 {
@@ -1873,6 +1874,7 @@ static int max77843_rgb_probe(struct platform_device *pdev)
 
 #endif
 #endif
+	max77843led_dev = dev;
 	
 	wq_controlFrontLED = alloc_workqueue("controlFrontLED_wq", WQ_HIGHPRI, 0);
 	
