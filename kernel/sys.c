@@ -2479,7 +2479,7 @@ EXPORT_SYMBOL_GPL(orderly_poweroff);
  * do_sysinfo - fill in sysinfo struct
  * @info: pointer to buffer to fill
  */
-static int do_sysinfo(struct sysinfo *info)
+int do_sysinfo(struct sysinfo *info)
 {
 	unsigned long mem_total, sav_total;
 	unsigned int mem_unit, bitcount;
@@ -2541,6 +2541,7 @@ static int do_sysinfo(struct sysinfo *info)
 out:
 	return 0;
 }
+EXPORT_SYMBOL_GPL(do_sysinfo);
 
 SYSCALL_DEFINE1(sysinfo, struct sysinfo __user *, info)
 {
