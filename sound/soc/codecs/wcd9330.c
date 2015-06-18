@@ -87,6 +87,10 @@ extern unsigned int system_rev;
 #define TOMTOM_CPE_CDC_ID 1
 #define RX8_PATH 8
 
+#ifdef CONFIG_PLASMA
+extern void plasma_sound_playing(bool state);
+#endif
+
 extern void msm_submic_delay_event(bool state);
 
 static int cpe_debug_mode;
@@ -2422,6 +2426,10 @@ static int slim_rx_mux_put(struct snd_kcontrol *kcontrol,
 		ucontrol->value.integer.value[0]);
 
 	widget->value = ucontrol->value.enumerated.item[0];
+
+#ifdef CONFIG_PLASMA
+    plasma_sound_playing(ucontrol->value.integer.value[0]);
+#endif
 
 	mutex_lock(&codec->mutex);
 
