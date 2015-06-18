@@ -241,6 +241,15 @@ u32 es705_streaming_cmds[4] = {
 	0x90250100,		/* ES705_UART_INTF */
 };
 
+static void es705_presspower_work(struct work_struct * work_es705_presspower);
+static DECLARE_DELAYED_WORK(work_es705_presspower, es705_presspower_work);
+
+static void es705_presspower_work(struct work_struct * work_es705_presspower)
+{
+	pr_info("[es705/%s] pressing power\n", __func__);
+	press_power();
+}
+
 #define SAMSUNG_ES70X_RESTORE_STD_FW
 #if defined(SAMSUNG_ES70X_RESTORE_STD_FW)
 static int cnt_restore_std_fw_in_sleep = 0;
@@ -2804,9 +2813,9 @@ static int es705_put_voice_wakeup_enable_value(struct snd_kcontrol *kcontrol,
 								(time_now.tv_usec - time_voice_lastirq.tv_usec) / USEC_PER_MSEC;
 		
 		if (timesince_voice_lastirq > 2000 && timesince_voice_lastirq < 45000 && flg_voice_allowturnoff) {
-			pr_info("[es705/es705_put_voice_wakeup_enable_value] pressing power key (timesince: %d)\n", timesince_voice_lastirq);
+			pr_info("[es705/es705_put_voice_wakeup_enable_value] pressing power key in 500ms (timesince: %d)\n", timesince_voice_lastirq);
 			vk_press_button(158, false, true, false, false);
-			press_power();
+			schedule_delayed_work(&work_es705_presspower, msecs_to_jiffies(500));
 		} else {
 			pr_info("[es705/es705_put_voice_wakeup_enable_value] would be pressing power key (timesince: %d)\n", timesince_voice_lastirq);
 		}
