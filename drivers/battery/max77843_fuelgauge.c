@@ -358,7 +358,7 @@ static int max77843_fg_read_soc(struct max77843_fuelgauge_data *fuelgauge)
 		return -1;
 	}
 
-	soc = ((data[1] * 100) + (data[0] * 100 / 256)) / 10;
+	soc = max77843_fg_read_vfsoc(fuelgauge);
 	vf_soc = max77843_fg_read_vfsoc(fuelgauge);
 
 #ifdef BATTERY_LOG_MESSAGE
