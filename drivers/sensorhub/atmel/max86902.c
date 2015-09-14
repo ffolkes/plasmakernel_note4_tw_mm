@@ -90,6 +90,13 @@
 #define MAX86902_IRQ_ENABLE	1
 #define MAX86902_IRQ_DISABLE	0
 
+extern void plasma_sensor_uv_report(unsigned int data);
+
+static int ctr_hr = 0;
+static int ary_hr[25] =  { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+							0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+							0, 0, 0, 0, 0 };
+
 /* I2C function */
 static int max86900_write_reg(struct max86900_device_data *device,
 	u8 reg_addr, u8 data)
@@ -1869,6 +1876,7 @@ static int max86902_uv_read_data_hr(struct max86900_device_data *device, int *da
 	int reg_data = 0;
 	int sum_data = 0;
 	int i;
+	int hr_lowest = 99999;
 
 	status = MAX86902_INTERRUPT_STATUS;
 	err = max86900_read_reg(device, &status, 1);
@@ -1911,6 +1919,28 @@ static int max86902_uv_read_data_hr(struct max86900_device_data *device, int *da
 			pr_err("%s - max86902_uv_enable_uv err : %d\n",
 				__func__, err);
 			return -EIO;
+		}
+		
+		ary_hr[ctr_hr] = sum_data;
+		//pr_info("[max86902/hr] saved: %d\n", ary_hr[ctr_hr]);
+		ctr_hr++;
+		
+		if (ctr_hr > 24)
+			ctr_hr = 0;
+		
+		hr_lowest = sum_data;
+		
+		for (i = 0; i < 25; i++) {
+			if (ary_hr[i] < hr_lowest && ary_hr[i] > 0)
+				hr_lowest = ary_hr[i];
+			//else
+			//	pr_info("[max86902/hr] i: %d, didn't match because ary_hr[i]: %d was not less than hr_lowest: %d\n", i, ary_hr[i], hr_lowest);
+		}
+		
+		pr_info("[max86902/hr] lowest in 25 samples: %d\n", hr_lowest);
+		
+		if (sum_data - hr_lowest > 1000) {
+			pr_info("[max86902/hr] BEAT! delta: %d\n", sum_data - hr_lowest);
 		}
 
 		*data = sum_data;
@@ -1957,6 +1987,7 @@ static int max86902_uv_read_data_uv(struct max86900_device_data *device, int *da
 				__func__, err);
 			return -EIO;
 		}
+		plasma_sensor_uv_report(*data);
 		pr_info("%s - %u\n", __func__, *data);
 		ret = MAX86902_ENHANCED_UV_MODE;
 	}
