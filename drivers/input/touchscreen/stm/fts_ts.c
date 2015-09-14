@@ -90,11 +90,13 @@ extern int get_lcd_attached(char*);
 extern void plasma_process_tsp_touch_enter(int finger, int touchcount);
 extern int plasma_process_tsp_touch_move(int finger, int x, int y, int pressure);
 extern void plasma_process_tsp_touch_exit(int finger, int touchcount, int x, int y, int pressure);
+extern bool plasma_tsp_check_to_stay_on(void);
 extern int plasma_inject_tsp_x;
 extern int plasma_inject_tsp_y;
 extern bool flg_voice_allowturnoff;
 extern int s2w_switch;
 extern unsigned int ctr_power_suspends;
+struct input_dev *plasma_input_dev_tsp;
 
 extern int boot_mode_recovery;
 #ifdef CONFIG_SAMSUNG_LPM_MODE
@@ -102,7 +104,7 @@ extern int poweroff_charging;
 #endif
 
 static bool flg_enable_hover = false;
-bool flg_tsp_always_on = false;
+//bool flg_tsp_always_on = false;  // depreciated
 
 #ifdef USE_OPEN_CLOSE
 static int fts_input_open(struct input_dev *dev);
@@ -310,7 +312,7 @@ static ssize_t enable_hover_store(struct device *dev,
 
 static unsigned int plasma_lpm_override(void)
 {
-	if (flg_tsp_always_on || ctr_power_suspends < 2) {
+	if (plasma_tsp_check_to_stay_on() || ctr_power_suspends < 2) {
 		// if flag is set or we're on our ~first suspend, then stay on.
 		// we do this in anticipation of synapse turning something on
 		// after the screen times out that would have required flg_tsp_always_on.
@@ -2541,6 +2543,8 @@ static int fts_probe(struct i2c_client *client, const struct i2c_device_id *idp)
 
 	fts_secure_touch_init(info);
 #endif
+	
+	plasma_input_dev_tsp = info->input_dev;
 
 	device_init_wakeup(&client->dev, 1);
 
@@ -2944,6 +2948,18 @@ void fts_release_all_finger(struct fts_ts_info *info)
 		info->tsp_booster->dvfs_set(info->tsp_booster, -1);
 #endif
 }
+	
+void plasma_tsp_suspend(void)
+{
+	fts_input_close(plasma_input_dev_tsp);
+}
+EXPORT_SYMBOL(plasma_tsp_suspend);
+	
+void plasma_tsp_resume(void)
+{
+	fts_input_open(plasma_input_dev_tsp);
+}
+EXPORT_SYMBOL(plasma_tsp_resume);
 
 #if defined(CONFIG_SECURE_TOUCH)
 static void fts_secure_touch_stop(struct fts_ts_info *info, int blocking)
@@ -2960,6 +2976,8 @@ static void fts_secure_touch_stop(struct fts_ts_info *info, int blocking)
 
 static int fts_stop_device(struct fts_ts_info *info)
 {
+	pr_info("[tsp/fts_stop_device]\n");
+	
 	info->lowpower_mode = plasma_lpm_override();
 	
 	dev_info(&info->client->dev, "%s %s\n",
