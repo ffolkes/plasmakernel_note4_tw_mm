@@ -43,18 +43,27 @@ extern bool sttg_s2w_mode;
 extern bool sttg_a2w_mode;
 extern bool sttg_p2w_mode;
 extern unsigned int sttg_pu_blockpower;
+extern unsigned int sttg_pf_fo_steps;
+extern unsigned int sttg_pf_fo_stepdelay;
 extern bool pu_valid(void);
 extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
 extern bool flg_pu_locktsp;
+extern bool flg_tsp_lockedout;
 extern unsigned int ctr_power_suspends;
+extern void kcal_fadeOut(void);
+extern struct timeval time_power_resumed;
 
 struct timeval time_pressed_power;
 struct timeval time_pressed_powerbypass;
 static bool flg_skip_next = false;
 static bool flg_allow_next = false;
+static bool flg_power_down_while_suspended = false;
 static int ctr_powerpress = 0;
 struct input_dev *plasma_input_dev_qpnp;
+
+static void releasepower_work(struct work_struct * work_releasepower);
+static DECLARE_DELAYED_WORK(work_releasepower, releasepower_work);
 
 /* Common PNP defines */
 #define QPNP_PON_REVISION2(base)		(base + 0x01)
@@ -211,6 +220,14 @@ static const char * const qpnp_poff_reason[] = {
 	[14] = "Triggered from OTST3 (Overtemp)",
 	[15] = "Triggered from STAGE3 (Stage 3 reset)",
 };
+
+static void releasepower_work(struct work_struct * work_releasepower)
+{
+	pr_info("[qpnp-power-on/releasepower_work] releasing power\n");
+	input_report_key(plasma_input_dev_qpnp, 116, 0);
+	input_sync(plasma_input_dev_qpnp);
+	flg_tsp_lockedout = false;
+}
 
 static int
 qpnp_pon_masked_write(struct qpnp_pon *pon, u16 addr, u8 mask, u8 val)
@@ -487,6 +504,7 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	struct qpnp_pon_config *cfg = NULL;
 	u8 pon_rt_sts = 0, pon_rt_bit = 0;
 	u32 key_status;
+	int timesince_pressed_power = 0;
 
 	cfg = qpnp_get_cfg(pon, pon_type);
 	if (!cfg)
@@ -591,10 +609,36 @@ passthrough:
 	}
 	
 	pr_info("[qpnp-power-on] qpnp_pon_input_dispatch. code: %d status: %d\n", cfg->key_code, key_status);
+	timesince_pressed_power = do_timesince(time_pressed_power);
 
-	input_report_key(pon->pon_input, cfg->key_code, key_status);
-	input_sync(pon->pon_input);
-	pr_info("[KEY] code(0x%02X), value(%d)\n", cfg->key_code, key_status);
+	if (!flg_power_suspended
+		&& !key_status
+		&& timesince_pressed_power < 250
+		&& sttg_pf_fo_steps
+		&& !flg_power_down_while_suspended
+		&& do_timesince(time_power_resumed) > 2000) {
+		
+		pr_info("[qpnp-power-on] scheduling work to release (since press power: %d\n", timesince_pressed_power);
+		flg_tsp_lockedout = true;
+		kcal_fadeOut();
+		cancel_delayed_work_sync(&work_releasepower);
+		
+		// we need to make sure we don't end up triggering a long-press.
+		// so try to estimate how long the fade will be, also it takes about
+		// 25ms for the commit to happen, and don't forget to subtract the timesince_pressed_power.
+		schedule_delayed_work_on(0, &work_releasepower, msecs_to_jiffies(min(250, (int) ((sttg_pf_fo_steps * 25) + (sttg_pf_fo_steps * sttg_pf_fo_stepdelay) - timesince_pressed_power))));
+	} else {
+		
+		// we need to know if this event started while suspended.
+		if (flg_power_suspended)
+			flg_power_down_while_suspended = true;
+		else
+			flg_power_down_while_suspended = false;
+		
+		input_report_key(pon->pon_input, cfg->key_code, key_status);
+		input_sync(pon->pon_input);
+		pr_info("[KEY] code(0x%02X), value(%d)\n", cfg->key_code, key_status);
+	}
 	
 	// boost as fast as possible for power key, but let voldown be handled by inputbooster.
 	// also boost if release event occurred without a press.
