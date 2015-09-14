@@ -55,7 +55,8 @@ extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
 extern bool flg_pu_locktsp;
 extern unsigned int sttg_pu_blockpower;
-extern void mdnie_toggle_nightmode(void);
+//extern void mdnie_toggle_nightmode(void);
+extern void kcal_toggle_nightmode(void);
 
 struct timeval time_pressed_homekey;
 struct timeval time_pressed_home;
@@ -507,7 +508,8 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 			if (ctr_homepress == 2) {
 				// this is the 3rd press.
 				pr_info("[KEYS/gpio_keys_gpio_report_event] toggling nightmode");
-				mdnie_toggle_nightmode();
+				//mdnie_toggle_nightmode();
+				kcal_toggle_nightmode();
 			}
 			
 			// don't send button-up.
