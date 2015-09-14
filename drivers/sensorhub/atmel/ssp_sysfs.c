@@ -17,6 +17,8 @@
 
 #define BATCH_IOCTL_MAGIC		0xFC
 
+extern void plasma_sensor_prox_report(unsigned int detected);
+
 struct batch_config {
 	int64_t timeout;
 	int64_t delay;
@@ -157,6 +159,12 @@ static int ssp_remove_sensor(struct ssp_data *data,
 
 	ssp_dbg("[SSP]: %s - remove sensor = %d, current state = %d\n",
 		__func__, (1 << uChangedSensor), uNewEnable);
+	
+	if ((1 << uChangedSensor) == 32) {
+		// make sure plasma knows prox is off.
+		pr_info("[ssp] sensor 128 removed\n");
+		plasma_sensor_prox_report(0);
+	}
 
 	data->adDelayBuf[uChangedSensor] = DEFUALT_POLLING_DELAY;
 	data->batchLatencyBuf[uChangedSensor] = 0;
@@ -264,6 +272,8 @@ static ssize_t set_sensors_enable(struct device *dev,
 	for (uChangedSensor = 0; uChangedSensor < SENSOR_MAX; uChangedSensor++) {
 		if ((atomic_read(&data->aSensorEnable) & (1 << uChangedSensor))
 			!= (uNewEnable & (1 << uChangedSensor))) {
+			
+			pr_info("[ssp/set_sensors_enable] changedsensor: %d\n", uChangedSensor);
 
 			if (!(uNewEnable & (1 << uChangedSensor))) {
 				data->reportedData[uChangedSensor] = false;
