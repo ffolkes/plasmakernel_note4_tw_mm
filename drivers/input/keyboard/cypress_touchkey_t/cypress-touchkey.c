@@ -95,7 +95,8 @@ static unsigned int time_since_tk_mt_lastpress = 0;
 // tk flick.
 extern bool sttg_tkf_mode;
 extern bool sttg_tkf_mediamode;
-extern unsigned int sttg_tkf_precheck_timeout;
+extern unsigned int sttg_tkf_key1_precheck_timeout;
+extern unsigned int sttg_tkf_key2_precheck_timeout;
 extern unsigned int sttg_tkf_key1_key_code;
 extern unsigned int sttg_tkf_key2_key_code;
 extern bool flg_tkf_tsp;
@@ -768,16 +769,16 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 	struct timeval time_now_tk_mt;
 	struct timeval time_now_tkf;
 	unsigned int tmp_sttg_tkf_precheck_timeout = 0;
-	bool flg_justwokeup = false;
+	//bool flg_justwokeup = false;
 
 	ret = gpio_get_value(info->pdata->gpio_int);
 	if (ret) {
 		dev_info(&info->client->dev,
 				"%s: not real interrupt (%d).\n", __func__, ret);
-		if (!flg_power_suspended)
+		//if (!flg_power_suspended)
 			goto out;
-		else
-			flg_justwokeup = true;
+		//else
+		//	flg_justwokeup = true;
 	}
 
 	if (info->is_powering_on) {
@@ -844,6 +845,9 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 	
 	tk_key_keycode = tk_applyCustomkeycode(code, info->keycode[code]);
 	
+	pr_info(LOGTAG"/cypress_touchkey_interrupt] touch_x_start: %d, tkf_active_code: %d, press: %d, code: %d, tkf_active_key_state: %d\n",
+		   touch_x_start, tkf_active_code, press, code, tkf_active_key_state);
+	
 	if (
 		((touch_x_start < 1  // don't allow tkf if the tsp is already being touched
 		  || tkf_active_code > -1)  // when we slide, we are sloppy, so we have to allow errant tsp contact
@@ -864,6 +868,8 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 			   )
 		   )
 		) {
+		
+		pr_info(LOGTAG"/cypress_touchkey_interrupt] starting tkf checks\n");
 		
 		if (pu_checkLockout()) {
 			// device is locked out. disable touchkeys unless tks are allowed,
@@ -891,15 +897,21 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 		// hold a wakelock, and automatically unwakelock it in 1000ms.
 		tk_refreshwakelock(1000);
 		
-		if (!flg_power_suspended)
-			tmp_sttg_tkf_precheck_timeout = sttg_tkf_precheck_timeout;
-		else {
+		if (!flg_power_suspended) {
+			if (code == 0)
+				tmp_sttg_tkf_precheck_timeout = sttg_tkf_key1_precheck_timeout;
+			else
+				tmp_sttg_tkf_precheck_timeout = sttg_tkf_key2_precheck_timeout;
+		} else {
 			// if we're suspended, we want to give extra, extra time to account for unfreezing.
 			
 			//if (flg_justwokeup)
 			//	tmp_sttg_tkf_precheck_timeout = 1000;
 			//else
-				tmp_sttg_tkf_precheck_timeout = 400;
+				if (code == 0)
+					tmp_sttg_tkf_precheck_timeout = max(400, (int) sttg_tkf_key1_precheck_timeout);
+				else
+					tmp_sttg_tkf_precheck_timeout = max(400, (int) sttg_tkf_key2_precheck_timeout);
 		}
 		
 		if (press) {
