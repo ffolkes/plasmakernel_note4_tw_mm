@@ -20,6 +20,7 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/types.h>
 
+extern void plasma_sensor_rgblight_report(unsigned int r, unsigned int g, unsigned int b, unsigned int lux);
 extern void plasma_sensor_prox_report(unsigned int detected);
 
 /*************************************************************************/
@@ -409,10 +410,15 @@ void report_pressure_data(struct ssp_data *data, struct sensor_value *predata)
 
 	ssp_push_12bytes_buffer(data->pressure_indio_dev, predata->timestamp,
 		temp);
+	
+	pr_info("[ssp/report_pressure_data] a: %d, b: %d, c: %d\n",
+			temp[0], temp[1], temp[2]);
 }
 
 void report_light_data(struct ssp_data *data, struct sensor_value *lightdata)
 {
+	plasma_sensor_rgblight_report(lightdata->r, lightdata->g, lightdata->b, lightdata->w);
+	
 	data->buf[LIGHT_SENSOR].r = lightdata->r;
 	data->buf[LIGHT_SENSOR].g = lightdata->g;
 	data->buf[LIGHT_SENSOR].b = lightdata->b;
@@ -432,6 +438,10 @@ void report_light_data(struct ssp_data *data, struct sensor_value *lightdata)
 		data->buf[LIGHT_SENSOR].a_time + 1);
 	input_report_rel(data->light_input_dev, REL_RZ,
 		data->buf[LIGHT_SENSOR].a_gain + 1);
+	
+	//pr_info("[ssp/report_light_data] r: %d, g: %d, b: %d, w: %d, a_time: %d, a_gain: %d\n",
+	//		lightdata->r, lightdata->g, lightdata->b,
+	//		lightdata->w, lightdata->a_time, (0x03) & (lightdata->a_gain));
 
 	input_sync(data->light_input_dev);
 }
@@ -499,6 +509,8 @@ void report_step_cnt_data(struct ssp_data *data,
 	input_report_rel(data->step_cnt_input_dev, REL_MISC,
 		data->step_count_total + 1);
 	input_sync(data->step_cnt_input_dev);
+	
+	//pr_info("[ssp/report_step_cnt_data] steps: %lld\n", data->step_count_total);
 }
 
 void report_temp_humidity_data(struct ssp_data *data,
@@ -517,6 +529,9 @@ void report_temp_humidity_data(struct ssp_data *data,
 	input_sync(data->temp_humi_input_dev);
 	if (data->buf[TEMPERATURE_HUMIDITY_SENSOR].z)
 		wake_lock_timeout(&data->ssp_wake_lock, 2 * HZ);
+	
+	pr_info("[ssp/report_step_det_data] humidity, x: %d, y: %d, z: %d\n",
+			temp_humi_data->x, temp_humi_data->y, temp_humi_data->z);
 }
 
 int initialize_event_symlink(struct ssp_data *data)
