@@ -21,6 +21,7 @@ extern bool pu_valid(void);
 extern bool flg_pu_locktsp;
 extern bool flg_epen_tsp_block;
 extern bool flg_tk_tsp_block;
+extern bool flg_tsp_lockedout;
 extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern void press_power(void);
 //extern void controlVibrator(unsigned int duration, unsigned int strength);
@@ -823,14 +824,15 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 		}
 	}
 	
-	if (flg_epen_tsp_block) {
-		// ignore all input while spen is out.
-		return IRQ_HANDLED;
-	}
-	
 	if (flg_skip_next) {
 		// avoid sending the key-up event.
 		flg_skip_next = false;
+		return IRQ_HANDLED;
+	}
+	
+	if (flg_epen_tsp_block || flg_tsp_lockedout) {
+		// ignore all input while spen is out.
+		flg_skip_next = true;
 		return IRQ_HANDLED;
 	}
 	
