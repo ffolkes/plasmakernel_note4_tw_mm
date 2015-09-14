@@ -30,11 +30,28 @@ extern bool sttg_epen_vib_on_move;
 extern bool sttg_epen_vib_on_exit;
 extern bool flg_pu_locktsp;
 extern bool flg_epen_tsp_block;
+extern bool flg_epen_turnedon;
 extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
 						  int input_cycles, int devfreq_max_cycles, int devfreq_mid_cycles,
 						  int userspace_cycles);
 extern void controlVibrator(unsigned int duration, unsigned int strength);
+
+extern unsigned int sttg_epen_out_key_code;
+extern bool sttg_epen_out_key_delay;
+
+extern unsigned int sttg_epen_out_screenoff_key_code;
+extern bool sttg_epen_out_screenoff_key_delay;
+extern bool sttg_epen_out_screenoff_powerfirst;
+
+extern unsigned int sttg_epen_in_key_code;
+extern bool sttg_epen_in_key_delay;
+extern bool sttg_epen_in_powerfirst;
+extern bool sttg_epen_out_vibrate;
+
+extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
+extern void press_power(void);
+extern bool flg_power_suspended;
 
 int wacom_i2c_send(struct wacom_i2c *wac_i2c,
 			  const char *buf, int count, bool mode)
@@ -883,13 +900,82 @@ static void pen_insert_work(struct work_struct *work)
 	
 	// boost on remove. mode/max/mid/allcores/input/gpumax/gpumid/user
 	if (!wac_i2c->pen_insert) {
-		zzmoove_boost(0, 5, 0, 5, 50, 50, 0, 50);
+		// pen removed.
+		
+		// mode/max/mid/allcores/input/gpumax/gpumid/user
+		zzmoove_boost(0, 10, 0, 10, 50, 50, 0, 50);
 		
 		if (sttg_epen_worryfree)
 			flg_epen_tsp_block = true;
 		
-	} else
+		if (sttg_epen_out_vibrate)
+			controlVibrator(125, 125);
+
+		if (flg_power_suspended) {
+			// screen is off.
+			
+			if (sttg_epen_out_screenoff_powerfirst) {
+				// instead of using vk_press_button()'s powerfirst mode,
+				// turn it on manually instead since the user might want
+				// to turn it on, but not input any action.
+				
+				press_power();
+				flg_epen_turnedon = true;
+			}
+			
+			// now, we need to do the action here too, since if we just turned
+			// the screen on, flg_screen_on will always be true now.
+			
+			if (sttg_epen_out_screenoff_key_code) {
+				
+				pr_info("[E-PEN] SCREEN-OFF TRIGGERED --[E-PEN REMOVED]--\n");
+				vk_press_button(sttg_epen_out_screenoff_key_code,
+							 sttg_epen_out_screenoff_key_delay,
+							 true,
+							 false,
+							 false);
+			}
+			
+		} else {
+			// screen is on. we're using an ELSE so only one action is performed.
+			
+			if (sttg_epen_out_key_code) {
+				
+				if (!flg_power_suspended) {
+					
+					pr_info("[E-PEN] TRIGGERED --[E-PEN REMOVED]--\n");
+					vk_press_button(sttg_epen_out_key_code,
+								 sttg_epen_out_key_delay,
+								 true,
+								 false,
+								 false);
+				}
+			}
+		}
+		
+	} else {
+		// pen inserted.
+		
 		flg_epen_tsp_block = false;
+		
+		if (sttg_epen_in_key_code) {
+			
+			pr_info("[E-PEN] SCREEN-ON TRIGGERED --[E-PEN INSERTED]--\n");
+			vk_press_button(sttg_epen_in_key_code,
+							sttg_epen_in_key_delay,
+							true,
+							false,
+							false);
+		}
+
+		if (!flg_power_suspended && sttg_epen_in_powerfirst && flg_epen_turnedon) {
+			// if the screen is on and the user wants to turn it off when inserted.
+			// but only do this if the epen turned the screen on in the first place.
+			
+			pr_info("[E-PEN] TRIGGERED --[E-PEN INSERTED]--\n");
+			press_power();
+		}
+	}
 
 	dev_info(&wac_i2c->client->dev, "%s: pen %s\n",
 		__func__, wac_i2c->pen_insert ? "insert" : "remove");
