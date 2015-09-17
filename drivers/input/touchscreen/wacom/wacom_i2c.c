@@ -43,15 +43,35 @@ extern bool sttg_epen_out_key_delay;
 extern unsigned int sttg_epen_out_screenoff_key_code;
 extern bool sttg_epen_out_screenoff_key_delay;
 extern bool sttg_epen_out_screenoff_powerfirst;
+extern bool sttg_epen_out_vibrate;
 
 extern unsigned int sttg_epen_in_key_code;
 extern bool sttg_epen_in_key_delay;
 extern bool sttg_epen_in_powerfirst;
-extern bool sttg_epen_out_vibrate;
+
+extern unsigned int sttg_epen_side_key_code;
+extern unsigned int sttg_epen_side_key_delay;
+extern unsigned int sttg_epen_sidehold_precheck_timeout;
+extern unsigned int sttg_epen_sidehold_key_code;
+extern unsigned int sttg_epen_sidehold_key_delay;
 
 extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern void press_power(void);
 extern bool flg_power_suspended;
+static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_precheck);
+static DECLARE_DELAYED_WORK(work_epen_sidehold_precheck, epen_sidehold_precheck_work);
+
+static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_precheck)
+{
+	pr_info("[epen/epen_sidehold_precheck_work] sidehold lasted long enough, performing keycode: %d\n",
+			sttg_epen_sidehold_key_code);
+	
+	vk_press_button(sttg_epen_sidehold_key_code,
+					sttg_epen_sidehold_key_delay,
+					true,
+					false,
+					false);
+}
 
 int wacom_i2c_send(struct wacom_i2c *wac_i2c,
 			  const char *buf, int count, bool mode)
@@ -775,20 +795,67 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 
 			wac_i2c->pen_pressed = prox;
 
-			if (stylus && !wac_i2c->side_pressed)
+			if (stylus && !wac_i2c->side_pressed) {
 				dev_info(&wac_i2c->client->dev,
 						"%s: side on\n",
 						__func__);
-			else if (!stylus && wac_i2c->side_pressed)
+				
+				if (sttg_epen_side_key_code && !sttg_epen_sidehold_key_code) {
+					// do side payload if sidehold isn't enabled.
+					
+					pr_info("[epen/%s] SIDEPRESS - keycode: %d\n", __func__,
+							sttg_epen_side_key_code);
+					
+					vk_press_button(sttg_epen_side_key_code,
+									sttg_epen_side_key_delay,
+									true,
+									false,
+									false);
+					
+				} else if (sttg_epen_sidehold_key_code) {
+					// or if we have sidehold enabled, we have to do the sidepress
+					// payload on the up-event instead. sidehold payload will be in
+					// the delayed work.
+					
+					pr_info("[epen/%s] checking for sidehold in %d ms\n", __func__,
+							sttg_epen_sidehold_precheck_timeout);
+					
+					// schedule work to see if the sidepress will still be held down.
+					schedule_delayed_work_on(0, &work_epen_sidehold_precheck, msecs_to_jiffies(sttg_epen_sidehold_precheck_timeout));
+				}
+			}
+			else if (!stylus && wac_i2c->side_pressed) {
 				dev_info(&wac_i2c->client->dev,
 						"%s: side off\n",
 						__func__);
+				
+				if (sttg_epen_sidehold_key_code) {
+					
+					// we're coming up, have we completed a sidehold,
+					// or is this just a regular sidepress event?
+					if (delayed_work_pending(&work_epen_sidehold_precheck)) {
+						// work is still pending, so cancel it and just do a normal sidepress.
+						
+						pr_info("[epen/%s] cancelling sidehold work\n", __func__);
+						cancel_delayed_work_sync(&work_epen_sidehold_precheck);
+						
+						pr_info("[epen/%s] SIDEPRESS - keycode: %d\n", __func__,
+								sttg_epen_side_key_code);
+						
+						vk_press_button(sttg_epen_side_key_code,
+										sttg_epen_side_key_delay,
+										true,
+										false,
+										false);
+					}
+				}
+			}
 
 			wac_i2c->side_pressed = stylus;
 		}
 	} else {
 
-		if (wac_i2c->pen_prox && !flg_pu_locktsp) {
+		if (wac_i2c->pen_prox) {
 			/* input_report_abs(wac->input_dev,
 			   ABS_X, x); */
 			/* input_report_abs(wac->input_dev,
@@ -812,6 +879,12 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 					"%s: is out\n",
 					__func__);
 			
+			// the pen has left, so make sure the sidehold delay is cancelled.
+			if (sttg_epen_sidehold_key_code) {
+				pr_info("[epen/%s] cancelling sidehold work\n", __func__);
+				cancel_delayed_work_sync(&work_epen_sidehold_precheck);
+			}
+
 			//pr_info("[wacom] out - last x: %d, last y: %d\n", wac_i2c->last_x, wac_i2c->last_y);
 			
 			// if the side-button is down when hovering stops, that means we should
