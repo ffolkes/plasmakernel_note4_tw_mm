@@ -53,6 +53,7 @@ extern bool flg_tsp_lockedout;
 extern unsigned int ctr_power_suspends;
 extern void kcal_fadeOut(void);
 extern struct timeval time_power_resumed;
+extern bool plasma_gpio_check_only_button_down(int keycode);
 
 struct timeval time_pressed_power;
 struct timeval time_pressed_powerbypass;
@@ -612,7 +613,9 @@ passthrough:
 	timesince_pressed_power = do_timesince(time_pressed_power);
 
 	if (!flg_power_suspended
+		&& cfg->key_code == 116
 		&& !key_status
+		&& plasma_gpio_check_only_button_down(116)
 		&& timesince_pressed_power < 250
 		&& sttg_pf_fo_steps
 		&& !flg_power_down_while_suspended
