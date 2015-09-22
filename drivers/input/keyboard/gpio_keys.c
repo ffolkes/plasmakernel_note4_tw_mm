@@ -496,8 +496,8 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 	if (state && button->code == 172 && !flg_pu_locktsp) {
 		
 		// check to see if the 2nd press was fast enough (but not too fast, as that might be erroneous).
-		if (do_timesince(time_pressed_home) > 40
-			&& do_timesince(time_pressed_home) < 135) {
+		if (do_timesince(time_pressed_home) > 90
+			&& do_timesince(time_pressed_home) < 145) {
 			
 			// increment for valid press.
 			ctr_homepress++;
