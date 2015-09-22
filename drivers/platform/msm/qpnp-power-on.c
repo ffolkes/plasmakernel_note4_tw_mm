@@ -45,6 +45,8 @@ extern bool sttg_p2w_mode;
 extern unsigned int sttg_pu_blockpower;
 extern unsigned int sttg_pf_fo_steps;
 extern unsigned int sttg_pf_fo_stepdelay;
+extern unsigned int sttg_pf_fo_midpoint;
+extern unsigned int sttg_pf_fo_midpoint_stepdelay;
 extern bool pu_valid(void);
 extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
@@ -54,6 +56,8 @@ extern unsigned int ctr_power_suspends;
 extern void kcal_fadeOut(void);
 extern struct timeval time_power_resumed;
 extern bool plasma_gpio_check_only_button_down(int keycode);
+extern unsigned int kcal_commit_wait;
+extern bool flg_pf_fo_fadedbypower;
 
 struct timeval time_pressed_power;
 struct timeval time_pressed_powerbypass;
@@ -227,7 +231,7 @@ static void releasepower_work(struct work_struct * work_releasepower)
 	pr_info("[qpnp-power-on/releasepower_work] releasing power\n");
 	input_report_key(plasma_input_dev_qpnp, 116, 0);
 	input_sync(plasma_input_dev_qpnp);
-	flg_tsp_lockedout = false;
+	//flg_tsp_lockedout = false;
 }
 
 static int
@@ -506,6 +510,12 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	u8 pon_rt_sts = 0, pon_rt_bit = 0;
 	u32 key_status;
 	int timesince_pressed_power = 0;
+	int releasepower_delay = 0;
+	int pf_fo_normalsteps = 0;
+	int pf_fo_totalnormaldelay = 0;
+	int pf_fo_midsteps = 0;
+	int pf_fo_totalmiddelay = 0;
+	int tmp_kcal_commit_wait = 0;
 
 	cfg = qpnp_get_cfg(pon, pon_type);
 	if (!cfg)
@@ -621,15 +631,39 @@ passthrough:
 		&& !flg_power_down_while_suspended
 		&& do_timesince(time_power_resumed) > 2000) {
 		
-		pr_info("[qpnp-power-on] scheduling work to release (since press power: %d\n", timesince_pressed_power);
+		if (sttg_pf_fo_midpoint) {
+			pf_fo_normalsteps = sttg_pf_fo_midpoint;
+			pf_fo_totalnormaldelay = pf_fo_normalsteps * max(1, (int) sttg_pf_fo_stepdelay);
+			
+			pf_fo_midsteps = sttg_pf_fo_steps - sttg_pf_fo_midpoint;
+			pf_fo_totalmiddelay = pf_fo_midsteps * max(1, (int) sttg_pf_fo_midpoint_stepdelay);
+		} else {
+			pf_fo_totalnormaldelay = sttg_pf_fo_steps * max(1, (int) sttg_pf_fo_stepdelay);
+		}
+		
+		if (kcal_commit_wait >= 100)
+			tmp_kcal_commit_wait = kcal_commit_wait - 100;
+		else
+			tmp_kcal_commit_wait = kcal_commit_wait;
+		
+		releasepower_delay = pf_fo_totalnormaldelay + pf_fo_totalmiddelay + (sttg_pf_fo_steps * max(1, (int) tmp_kcal_commit_wait));
+		
+		if (releasepower_delay > (400 - timesince_pressed_power))
+			releasepower_delay = (400 - timesince_pressed_power);
+		else if (releasepower_delay < 0)
+			releasepower_delay = 0;
+		
+		pr_info("[qpnp-power-on] scheduling work to release in %d ms (since press power: %d)\n", (400 - timesince_pressed_power), timesince_pressed_power);
+		
 		flg_tsp_lockedout = true;
+		flg_pf_fo_fadedbypower = true;
 		kcal_fadeOut();
 		cancel_delayed_work_sync(&work_releasepower);
 		
 		// we need to make sure we don't end up triggering a long-press.
 		// so try to estimate how long the fade will be, also it takes about
 		// 25ms for the commit to happen, and don't forget to subtract the timesince_pressed_power.
-		schedule_delayed_work_on(0, &work_releasepower, msecs_to_jiffies(min(250, (int) ((sttg_pf_fo_steps * 25) + (sttg_pf_fo_steps * sttg_pf_fo_stepdelay) - timesince_pressed_power))));
+		schedule_delayed_work_on(0, &work_releasepower, msecs_to_jiffies(releasepower_delay));
 	} else {
 		
 		// we need to know if this event started while suspended.
