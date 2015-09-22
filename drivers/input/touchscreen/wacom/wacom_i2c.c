@@ -21,6 +21,7 @@
 #include "wacom_i2c_flash.h"
 
 extern bool sttg_epen_worryfree;
+extern unsigned int sttg_epen_worryfree_tk;
 extern unsigned int sttg_epen_fixedpressure;
 extern unsigned int sttg_epen_fixedminpressure;
 extern unsigned int sttg_epen_minpressure;
@@ -30,6 +31,7 @@ extern bool sttg_epen_vib_on_move;
 extern bool sttg_epen_vib_on_exit;
 extern bool flg_pu_locktsp;
 extern bool flg_epen_tsp_block;
+extern bool flg_epen_tk_block;
 extern bool flg_epen_turnedon;
 extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
@@ -58,8 +60,23 @@ extern unsigned int sttg_epen_sidehold_key_delay;
 extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern void press_power(void);
 extern bool flg_power_suspended;
+
+static struct timeval time_lastinrange;
 static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_precheck);
 static DECLARE_DELAYED_WORK(work_epen_sidehold_precheck, epen_sidehold_precheck_work);
+
+/*static int do_timesince(struct timeval time_start)
+{
+	struct timeval time_now;
+	int timesince;
+	
+	do_gettimeofday(&time_now);
+	
+	timesince = (time_now.tv_sec - time_start.tv_sec) * MSEC_PER_SEC +
+				(time_now.tv_usec - time_start.tv_usec) / USEC_PER_MSEC;
+	
+	return timesince;
+}*/
 
 static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_precheck)
 {
@@ -714,6 +731,10 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 		if (sttg_epen_worryfree)
 			flg_epen_tsp_block = true;
 		
+		// if requested, block the touchkeys while pen is in range.
+		if (sttg_epen_worryfree_tk == 1)
+			flg_epen_tk_block = true;
+		
 		//pr_info("[wacom] x: %d, y: %d, pressure: %d, gain: %d, prox: %d, stylus: %d, rubber: %d, rdy: %d\n",
 		//		x, y, pressure, gain, prox, stylus, rubber, rdy);
 
@@ -799,30 +820,31 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 				dev_info(&wac_i2c->client->dev,
 						"%s: side on\n",
 						__func__);
-				
-				if (sttg_epen_side_key_code && !sttg_epen_sidehold_key_code) {
-					// do side payload if sidehold isn't enabled.
-					
-					pr_info("[epen/%s] SIDEPRESS - keycode: %d\n", __func__,
-							sttg_epen_side_key_code);
-					
-					vk_press_button(sttg_epen_side_key_code,
-									sttg_epen_side_key_delay,
-									true,
-									false,
-									false);
-					
-				} else if (sttg_epen_sidehold_key_code) {
-					// or if we have sidehold enabled, we have to do the sidepress
-					// payload on the up-event instead. sidehold payload will be in
-					// the delayed work.
-					
-					pr_info("[epen/%s] checking for sidehold in %d ms\n", __func__,
-							sttg_epen_sidehold_precheck_timeout);
-					
-					// schedule work to see if the sidepress will still be held down.
-					schedule_delayed_work_on(0, &work_epen_sidehold_precheck, msecs_to_jiffies(sttg_epen_sidehold_precheck_timeout));
-				}
+				//if (do_timesince(time_lastinrange) > 250) {  // this check is disabled for now
+					if (sttg_epen_side_key_code && !sttg_epen_sidehold_key_code) {
+						// do side payload if sidehold isn't enabled.
+						
+						pr_info("[epen/%s] SIDEPRESS - keycode: %d\n", __func__,
+								sttg_epen_side_key_code);
+						
+						vk_press_button(sttg_epen_side_key_code,
+										sttg_epen_side_key_delay,
+										true,
+										false,
+										false);
+						
+					} else if (sttg_epen_sidehold_key_code) {
+						// or if we have sidehold enabled, we have to do the sidepress
+						// payload on the up-event instead. sidehold payload will be in
+						// the delayed work.
+						
+						pr_info("[epen/%s] checking for sidehold in %d ms\n", __func__,
+								sttg_epen_sidehold_precheck_timeout);
+						
+						// schedule work to see if the sidepress will still be held down.
+						schedule_delayed_work_on(0, &work_epen_sidehold_precheck, msecs_to_jiffies(sttg_epen_sidehold_precheck_timeout));
+					}
+				//}
 			}
 			else if (!stylus && wac_i2c->side_pressed) {
 				dev_info(&wac_i2c->client->dev,
@@ -880,10 +902,12 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 					__func__);
 			
 			// the pen has left, so make sure the sidehold delay is cancelled.
-			if (sttg_epen_sidehold_key_code) {
-				pr_info("[epen/%s] cancelling sidehold work\n", __func__);
+			if (sttg_epen_sidehold_key_code)
 				cancel_delayed_work_sync(&work_epen_sidehold_precheck);
-			}
+			
+			// the pen has left, so make sure the tk block is released.
+			if (sttg_epen_worryfree_tk == 1)
+				flg_epen_tk_block = false;
 
 			//pr_info("[wacom] out - last x: %d, last y: %d\n", wac_i2c->last_x, wac_i2c->last_y);
 			
@@ -950,6 +974,9 @@ static irqreturn_t wacom_interrupt_pdct(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 	wac_i2c->pen_pdct = gpio_get_value(wac_i2c->wac_dt_data->gpio_pen_pdct);
+	
+	if (!wac_i2c->pen_pdct && !wac_i2c->pen_prox)
+		do_gettimeofday(&time_lastinrange);
 
 	dev_info(&wac_i2c->client->dev, "%s: pdct %d(%d) [%s]\n",
 			__func__, wac_i2c->pen_pdct, wac_i2c->pen_prox,
@@ -980,6 +1007,9 @@ static void pen_insert_work(struct work_struct *work)
 		
 		if (sttg_epen_worryfree)
 			flg_epen_tsp_block = true;
+		
+		if (sttg_epen_worryfree_tk == 2)
+			flg_epen_tk_block = true;
 		
 		if (sttg_epen_out_vibrate)
 			controlVibrator(125, 125);
@@ -1030,6 +1060,7 @@ static void pen_insert_work(struct work_struct *work)
 		// pen inserted.
 		
 		flg_epen_tsp_block = false;
+		flg_epen_tk_block = false;
 		
 		if (sttg_epen_in_key_code) {
 			

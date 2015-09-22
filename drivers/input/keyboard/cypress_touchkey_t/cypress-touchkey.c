@@ -20,6 +20,7 @@ extern unsigned int pu_recording_end(void);
 extern bool pu_valid(void);
 extern bool flg_pu_locktsp;
 extern bool flg_epen_tsp_block;
+extern bool flg_epen_tk_block;
 extern bool flg_tk_tsp_block;
 extern bool flg_tsp_lockedout;
 extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
@@ -830,7 +831,7 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 	
-	if (flg_epen_tsp_block || flg_tsp_lockedout) {
+	if (flg_epen_tsp_block || flg_tsp_lockedout || flg_epen_tk_block) {
 		// ignore all input while spen is out.
 		flg_skip_next = true;
 		return IRQ_HANDLED;
