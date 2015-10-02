@@ -33,6 +33,12 @@ extern bool flg_pu_locktsp;
 extern bool flg_epen_tsp_block;
 extern bool flg_epen_tk_block;
 extern bool flg_epen_turnedon;
+extern bool flg_epen_removedwhileoff;
+extern unsigned int zz_sttg_inputboost_punch_cycles;
+extern unsigned int zz_sttg_inputboost_epen_freq;
+extern unsigned int zz_sttg_inputboost_epen_cores;
+extern unsigned int zz_sttg_inputboost_epen_hover;
+extern int flg_ctr_inputboost_epen;
 extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
 						  int input_cycles, int devfreq_max_cycles, int devfreq_mid_cycles,
@@ -50,6 +56,7 @@ extern bool sttg_epen_out_vibrate;
 extern unsigned int sttg_epen_in_key_code;
 extern bool sttg_epen_in_key_delay;
 extern bool sttg_epen_in_powerfirst;
+extern bool sttg_epen_in_powerfirstalways;
 
 extern unsigned int sttg_epen_side_key_code;
 extern unsigned int sttg_epen_side_key_delay;
@@ -62,6 +69,7 @@ extern void press_power(void);
 extern bool flg_power_suspended;
 
 static struct timeval time_lastinrange;
+static bool flg_epen_sidehold_pending = false;
 static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_precheck);
 static DECLARE_DELAYED_WORK(work_epen_sidehold_precheck, epen_sidehold_precheck_work);
 
@@ -82,6 +90,8 @@ static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_
 {
 	pr_info("[epen/epen_sidehold_precheck_work] sidehold lasted long enough, performing keycode: %d\n",
 			sttg_epen_sidehold_key_code);
+	
+	flg_epen_sidehold_pending = false;
 	
 	vk_press_button(sttg_epen_sidehold_key_code,
 					sttg_epen_sidehold_key_delay,
@@ -481,7 +491,8 @@ static void wacom_i2c_enable(struct wacom_i2c *wac_i2c)
 			"%s\n", __func__);
 
 #ifdef BATTERY_SAVING_MODE
-	if (wac_i2c->pen_insert)
+	if (wac_i2c->battery_saving_mode
+		&& wac_i2c->pen_insert)
 		en = false;
 #endif
 
@@ -735,12 +746,28 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 		if (sttg_epen_worryfree_tk == 1)
 			flg_epen_tk_block = true;
 		
+		if (prox && flg_epen_sidehold_pending) {
+			pr_info("[epen/%s] pen is now writing, cancelling sidehold work\n", __func__);
+			cancel_delayed_work_sync(&work_epen_sidehold_precheck);
+			flg_epen_sidehold_pending = false;
+		}
+		
 		//pr_info("[wacom] x: %d, y: %d, pressure: %d, gain: %d, prox: %d, stylus: %d, rubber: %d, rdy: %d\n",
 		//		x, y, pressure, gain, prox, stylus, rubber, rdy);
 
 		if (!flg_pu_locktsp
 			&& wacom_i2c_coord_range(wac_i2c, &x, &y)) {
 			
+			// do we have a zz epen freq or core set?
+			if (zz_sttg_inputboost_epen_freq || zz_sttg_inputboost_epen_cores) {
+				
+				// do we want to boost on hover? otherwise only boost if prox is down.
+				if (zz_sttg_inputboost_epen_hover)
+					flg_ctr_inputboost_epen = zz_sttg_inputboost_punch_cycles;
+				else if (prox)
+					flg_ctr_inputboost_epen = zz_sttg_inputboost_punch_cycles;
+			}
+
 			input_report_abs(wac_i2c->input_dev, ABS_X, x);
 			input_report_abs(wac_i2c->input_dev, ABS_Y, y);
 			
@@ -820,7 +847,7 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 				dev_info(&wac_i2c->client->dev,
 						"%s: side on\n",
 						__func__);
-				//if (do_timesince(time_lastinrange) > 250) {  // this check is disabled for now
+				if (/*do_timesince(time_lastinrange) > 250*/!prox) {
 					if (sttg_epen_side_key_code && !sttg_epen_sidehold_key_code) {
 						// do side payload if sidehold isn't enabled.
 						
@@ -838,13 +865,15 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 						// payload on the up-event instead. sidehold payload will be in
 						// the delayed work.
 						
+						flg_epen_sidehold_pending = true;
+						
 						pr_info("[epen/%s] checking for sidehold in %d ms\n", __func__,
 								sttg_epen_sidehold_precheck_timeout);
 						
 						// schedule work to see if the sidepress will still be held down.
 						schedule_delayed_work_on(0, &work_epen_sidehold_precheck, msecs_to_jiffies(sttg_epen_sidehold_precheck_timeout));
 					}
-				//}
+				}
 			}
 			else if (!stylus && wac_i2c->side_pressed) {
 				dev_info(&wac_i2c->client->dev,
@@ -860,6 +889,8 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 						
 						pr_info("[epen/%s] cancelling sidehold work\n", __func__);
 						cancel_delayed_work_sync(&work_epen_sidehold_precheck);
+						
+						flg_epen_sidehold_pending = false;
 						
 						pr_info("[epen/%s] SIDEPRESS - keycode: %d\n", __func__,
 								sttg_epen_side_key_code);
@@ -902,8 +933,10 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 					__func__);
 			
 			// the pen has left, so make sure the sidehold delay is cancelled.
-			if (sttg_epen_sidehold_key_code)
+			if (sttg_epen_sidehold_key_code) {
 				cancel_delayed_work_sync(&work_epen_sidehold_precheck);
+				flg_epen_sidehold_pending = false;
+			}
 			
 			// the pen has left, so make sure the tk block is released.
 			if (sttg_epen_worryfree_tk == 1)
@@ -1017,6 +1050,8 @@ static void pen_insert_work(struct work_struct *work)
 		if (flg_power_suspended) {
 			// screen is off.
 			
+			flg_epen_removedwhileoff = true;
+			
 			if (sttg_epen_out_screenoff_powerfirst) {
 				// instead of using vk_press_button()'s powerfirst mode,
 				// turn it on manually instead since the user might want
@@ -1041,6 +1076,8 @@ static void pen_insert_work(struct work_struct *work)
 			
 		} else {
 			// screen is on. we're using an ELSE so only one action is performed.
+			
+			flg_epen_removedwhileoff = false;
 			
 			if (sttg_epen_out_key_code) {
 				
@@ -1071,10 +1108,17 @@ static void pen_insert_work(struct work_struct *work)
 							false,
 							false);
 		}
-
-		if (!flg_power_suspended && sttg_epen_in_powerfirst && flg_epen_turnedon) {
+		
+		if (!flg_power_suspended
+			&& (
+				(sttg_epen_in_powerfirst && flg_epen_turnedon)
+				|| (sttg_epen_in_powerfirstalways && flg_epen_removedwhileoff)
+				)
+			) {
 			// if the screen is on and the user wants to turn it off when inserted.
-			// but only do this if the epen turned the screen on in the first place.
+			// but only do this if the epen turned the screen on in the first place,
+			// of if the s-pen was removed while the screen was off (aka, and an app
+			// turned the screen on).
 			
 			pr_info("[E-PEN] TRIGGERED --[E-PEN INSERTED]--\n");
 			press_power();
@@ -1090,7 +1134,8 @@ static void pen_insert_work(struct work_struct *work)
 
 #ifdef BATTERY_SAVING_MODE
 	if (wac_i2c->pen_insert) {
-		wacom_i2c_disable(wac_i2c);
+		if (wac_i2c->battery_saving_mode)
+			wac_i2c->wacom_i2c_disable(wac_i2c);
 	} else {
 		wac_i2c->wacom_i2c_enable(wac_i2c);
 	}
