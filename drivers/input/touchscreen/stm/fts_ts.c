@@ -93,6 +93,7 @@ extern void plasma_process_tsp_touch_exit(int finger, int touchcount, int x, int
 extern bool plasma_tsp_check_to_stay_on(void);
 extern int plasma_inject_tsp_x;
 extern int plasma_inject_tsp_y;
+extern bool plasma_inject_tsp_upfirst;
 extern bool flg_voice_allowturnoff;
 extern int s2w_switch;
 extern unsigned int ctr_power_suspends;
@@ -1438,6 +1439,20 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 				
 			// todo: make this into a function.
 			if (plasma_inject_tsp_x > 0) {
+				
+				if (plasma_inject_tsp_upfirst) {
+					
+					pr_info("[tsp/exit] INJECTING - lifting finger first\n");
+					
+					input_mt_slot(info->input_dev, 0);
+					input_mt_report_slot_state(info->input_dev, MT_TOOL_FINGER, 0);
+					input_report_key(info->input_dev, BTN_TOUCH, 0);
+					input_report_key(info->input_dev, BTN_TOOL_FINGER, 0);
+					
+					input_sync(info->input_dev);
+					
+					plasma_inject_tsp_upfirst = false;
+				}
 				
 				input_mt_slot(info->input_dev, TouchID);
 				input_mt_report_slot_state(info->input_dev, MT_TOOL_FINGER, 1 + (palm << 1));
