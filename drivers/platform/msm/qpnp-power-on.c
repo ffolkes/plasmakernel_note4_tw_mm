@@ -34,7 +34,7 @@ extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
 						  int input_cycles, int devfreq_max_cycles, int devfreq_mid_cycles,
 						  int userspace_cycles);
-
+extern void vk_press_button_safe(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern bool flg_power_suspended;
 extern bool sttg_pu_tamperevident;
 extern bool sttg_pu_warnled;
@@ -47,6 +47,8 @@ extern unsigned int sttg_pf_fo_steps;
 extern unsigned int sttg_pf_fo_stepdelay;
 extern unsigned int sttg_pf_fo_midpoint;
 extern unsigned int sttg_pf_fo_midpoint_stepdelay;
+extern unsigned int sttg_mb_dp_power_screenoff_key_code;
+extern unsigned int sttg_mb_dp_power_screenoff_key_delay;
 extern bool pu_valid(void);
 extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
@@ -58,9 +60,13 @@ extern struct timeval time_power_resumed;
 extern bool plasma_gpio_check_only_button_down(int keycode);
 extern unsigned int kcal_commit_wait;
 extern bool flg_pf_fo_fadedbypower;
+extern bool flg_epen_tsp_block;
+extern bool flg_epen_tk_block;
+extern bool flg_epen_home_block;
 
 struct timeval time_pressed_power;
 struct timeval time_pressed_powerbypass;
+static struct timeval time_pressed_poweron;
 static bool flg_skip_next = false;
 static bool flg_allow_next = false;
 static bool flg_power_down_while_suspended = false;
@@ -621,6 +627,22 @@ passthrough:
 	
 	pr_info("[qpnp-power-on] qpnp_pon_input_dispatch. code: %d status: %d\n", cfg->key_code, key_status);
 	timesince_pressed_power = do_timesince(time_pressed_power);
+	
+	if (key_status
+		&& do_timesince(time_pressed_poweron) < 450
+		&& do_timesince(time_pressed_poweron) > 0
+		&& sttg_mb_dp_power_screenoff_key_code) {
+		
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch/mb_dp_power] power double press detected! (%d ms ago)\n", do_timesince(time_pressed_poweron));
+		vk_press_button_safe(sttg_mb_dp_power_screenoff_key_code, sttg_mb_dp_power_screenoff_key_delay, false, false, false);
+		
+		// drop this press, drop the up too.
+		flg_skip_next = true;
+		return 0;
+		
+	} else
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch/mb_dp_power] power double press not detected, key_status: %d, timesince: %d\n",
+				key_status, do_timesince(time_pressed_poweron));
 
 	if (!flg_power_suspended
 		&& cfg->key_code == 116
@@ -681,10 +703,13 @@ passthrough:
 	// also boost if release event occurred without a press.
 	if (cfg->key_code == 116 && (key_status || (!cfg->old_state && !key_status))) {
 		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] boosting for powerkey!\n");
-		zzmoove_boost(2, 10, 20, 20, 80, 10, 30, 0);
+		zzmoove_boost(2, 20, 20, 20, 80, 50, 0, 0);
 		
 		// save when power was last pressed, for touchwake.
 		do_gettimeofday(&time_pressed_power);
+		
+		if (flg_power_suspended)
+			time_pressed_poweron = time_pressed_power;
 	}
 	
 	if (key_status && flg_pu_locktsp && pu_valid()) {
@@ -742,6 +767,16 @@ passthrough:
 #endif
 
 	cfg->old_state = !!key_status;
+	
+	if (!key_status
+		&& cfg->key_code == 116
+		&& !flg_power_suspended
+		&& do_timesince(time_pressed_power) > 500 && do_timesince(time_pressed_power) < 1500) {
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] disabling s-pen worryfree blocks\n");
+		flg_epen_tsp_block = false;
+		flg_epen_tk_block = false;
+		flg_epen_home_block = false;
+	}
 
 	return 0;
 }
