@@ -29,6 +29,15 @@
 
 extern unsigned long sttg_gpufreq_mid_freq;
 extern unsigned long sttg_gpufreq_min_freq_cable;
+extern unsigned long sttg_gpufreq_punch_freq;
+extern unsigned long sttg_memfreq_punch_freq;
+extern unsigned long sttg_gpufreq_scrolling_freq;
+extern unsigned long sttg_memfreq_scrolling_freq;
+extern unsigned long sttg_gpufreq_epen_freq;
+extern unsigned long sttg_memfreq_epen_freq;
+extern int flg_ctr_inputboost_punch;
+extern int flg_ctr_inputboost_scrolling;
+extern int flg_ctr_inputboost_epen;
 extern bool flg_power_cableattached;
 int flg_ctr_devfreq_max = 0;
 int flg_ctr_devfreq_mid = 0;
@@ -215,8 +224,8 @@ int update_devfreq(struct devfreq *devfreq)
 	
 	if (flg_ctr_devfreq_max > 0) {
 		
-		//pr_info("[devfreq] flg_ctr_devfreq_max = %d, target: %ld, name: %s\n",
-		//		flg_ctr_devfreq_max, freq, devfreq->governor->name);
+		//pr_info("[devfreq] flg_ctr_devfreq_max = %d, target: %ld, name: %s, id: %d\n",
+		//		flg_ctr_devfreq_max, freq, devfreq->governor->name, devfreq->profile->num_governor_data);
 		
 		freq = devfreq->max_freq;
 		
@@ -249,6 +258,38 @@ int update_devfreq(struct devfreq *devfreq)
 				freq = tmp_gpufreq_freq;
 				//pr_info("[devfreq] bypass - newfreq: %ld\n", freq);
 			}
+			
+			if (sttg_gpufreq_punch_freq
+				&& flg_ctr_inputboost_punch > 0
+				&& freq < sttg_gpufreq_punch_freq)
+				freq = sttg_gpufreq_punch_freq;
+			
+			if (sttg_gpufreq_scrolling_freq
+				&& flg_ctr_inputboost_scrolling > 0
+				&& freq < sttg_gpufreq_scrolling_freq)
+				freq = sttg_gpufreq_scrolling_freq;
+			
+			if (sttg_gpufreq_epen_freq
+				&& flg_ctr_inputboost_epen > 0
+				&& freq < sttg_gpufreq_epen_freq)
+				freq = sttg_gpufreq_epen_freq;
+			
+		} else if (devfreq->profile->num_governor_data == 5) {
+			
+			if (sttg_memfreq_punch_freq
+				&& flg_ctr_inputboost_punch > 0
+				&& freq < sttg_memfreq_punch_freq)
+				freq = sttg_memfreq_punch_freq;
+			
+			if (sttg_memfreq_scrolling_freq
+				&& flg_ctr_inputboost_scrolling > 0
+				&& freq < sttg_memfreq_scrolling_freq)
+				freq = sttg_memfreq_scrolling_freq;
+			
+			if (sttg_memfreq_epen_freq
+				&& flg_ctr_inputboost_epen > 0
+				&& freq < sttg_memfreq_epen_freq)
+				freq = sttg_memfreq_epen_freq;
 		}
 	}
 
@@ -269,9 +310,10 @@ int update_devfreq(struct devfreq *devfreq)
 		if (devfreq_update_status(devfreq, freq))
 			dev_err(&devfreq->dev,
 				"Couldn't update frequency transition information.\n");
-	
-	//pr_info("[devfreq] id: %d, name: %s, max: %ld, min: %ld, set: %ld\n",
-	//		devfreq->profile->num_governor_data, devfreq->governor->name, devfreq->max_freq, devfreq->min_freq, freq);
+
+	//pr_info("[devfreq] id: %d, name: %s, max: %ld, min: %ld, set: %ld, flg_ctr_devfreq_max: %d, flg_ctr_devfreq_mid: %d, flg_ctr_inputboost_scrolling: %d, flg_ctr_inputboost_epen: %d\n",
+	//		devfreq->profile->num_governor_data, devfreq->governor->name, devfreq->max_freq, devfreq->min_freq, freq,
+	//		flg_ctr_devfreq_max, flg_ctr_devfreq_mid, flg_ctr_inputboost_scrolling, flg_ctr_inputboost_epen);
 
 	devfreq->previous_freq = freq;
 	return err;
