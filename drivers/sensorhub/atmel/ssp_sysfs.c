@@ -160,9 +160,9 @@ static int ssp_remove_sensor(struct ssp_data *data,
 	ssp_dbg("[SSP]: %s - remove sensor = %d, current state = %d\n",
 		__func__, (1 << uChangedSensor), uNewEnable);
 	
-	if ((1 << uChangedSensor) == 32) {
+	if ((1 << uChangedSensor) == 128) {
 		// make sure plasma knows prox is off.
-		pr_info("[ssp] sensor 128 removed\n");
+		pr_info("[ssp/plasma] sensor 128 removed, PROX OFF!\n");
 		plasma_sensor_prox_report(0);
 	}
 
