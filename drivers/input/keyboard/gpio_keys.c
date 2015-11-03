@@ -46,20 +46,25 @@ extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
 						  int input_cycles, int devfreq_max_cycles, int devfreq_mid_cycles,
 						  int userspace_cycles);
+extern void vk_press_button_safe(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 
 extern bool sttg_pu_tamperevident;
 extern bool sttg_pu_warnled;
 extern unsigned int sttg_gpio_key172_nohold;
+extern unsigned int sttg_mb_dp_home_screenoff_key_code;
+extern unsigned int sttg_mb_dp_home_screenoff_key_delay;
 extern bool pu_valid(void);
 extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
 extern bool flg_pu_locktsp;
+extern bool flg_epen_home_block;
 extern unsigned int sttg_pu_blockpower;
 //extern void mdnie_toggle_nightmode(void);
 extern void kcal_toggle_nightmode(void);
 
 struct timeval time_pressed_homekey;
 struct timeval time_pressed_home;
+static struct timeval time_pressed_homewhileoff;
 static bool flg_skip_next = false;
 static int ctr_homepress = 0;
 struct input_dev *plasma_input_dev_gpio;
@@ -393,17 +398,18 @@ void gpio_sync_worker(bool pwr)
 {
 	/* sys_sync(); */
 	if (suspended) {
-		if (pwr)
+		/*if (pwr)
 			pr_info("%s: KEY_POWER pressed, calling sys_sync() in 5 sec...\n", __func__);
 		else
-			pr_info("%s: KEY_HOME pressed, calling sys_sync() in 5 sec...\n", __func__);
+			pr_info("%s: KEY_HOME pressed, calling sys_sync() in 5 sec...\n", __func__);*/
 	} else {
 		if (pwr)
 			pr_info("%s: KEY_POWER pressed, calling sys_sync()\n", __func__);
 		else
 			pr_info("%s: KEY_HOME pressed, calling sys_sync()\n", __func__);
 	}
-	schedule_work(&sync_system_work);
+	if (!suspended)
+		schedule_work(&sync_system_work);
 }
 
 int key_irq_state;
@@ -527,9 +533,31 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 					ctr_homepress, do_timesince(time_pressed_home));
 			ctr_homepress = 1;
 		}
+	}
+	
+	if (state
+		&& button->code == 172) {
 		
 		// update time.
 		do_gettimeofday(&time_pressed_home);
+		
+		if (flg_power_suspended)
+			time_pressed_homewhileoff = time_pressed_home;
+		
+		if (sttg_mb_dp_home_screenoff_key_code
+			&& !flg_power_suspended
+			&& do_timesince(time_pressed_homewhileoff) < 450
+			&& do_timesince(time_pressed_homewhileoff) > 0) {
+			
+			pr_info("[KEYS/gpio_keys_gpio_report_event/mb_dp_home] home double press detected! (%d ms ago)\n", do_timesince(time_pressed_homewhileoff));
+			vk_press_button_safe(sttg_mb_dp_home_screenoff_key_code, sttg_mb_dp_home_screenoff_key_delay, false, false, false);
+			
+			// don't send button-up.
+			flg_skip_next = true;
+			return;
+		} else {
+			pr_info("[KEYS/gpio_keys_gpio_report_event/mb_dp_home] homepressedwhileoff: %d ms ago\n", do_timesince(time_pressed_homewhileoff));
+		}
 	}
 	
 	// boosts are handled by the inputbooster in zzmoove now.
@@ -548,7 +576,7 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 	}*/
 
 	if (button->code == KEY_HOMEPAGE) {
-		if (!home_old_state && !state && key_irq_state ) {
+		if (!home_old_state && !state && key_irq_state && !flg_epen_home_block) {
 			pr_info("[KEY] Force press home old state(%d), state(%d)\n", home_old_state, state);
 			input_event(input, type, KEY_HOMEPAGE , 1);
 			input_sync(input);
@@ -562,15 +590,20 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 	sec_debug_check_crash_key(button->code, state);
 #endif
 	
-	if (type == EV_ABS) {
-		if (state)
-			input_event(input, type, button->code, button->value);
-	} else {
-		input_event(input, type, button->code, !!state);
+	if (button->code != KEY_HOMEPAGE
+		|| (button->code == KEY_HOMEPAGE
+			&& !flg_epen_home_block)) {
+			
+		if (type == EV_ABS) {
+			if (state)
+				input_event(input, type, button->code, button->value);
+		} else {
+			input_event(input, type, button->code, !!state);
+		}
+		input_sync(input);
 	}
-	input_sync(input);
-	
-	if (!flg_power_suspended && sttg_gpio_key172_nohold && state && button->code == KEY_HOMEPAGE) {
+
+	if (!flg_power_suspended && sttg_gpio_key172_nohold && state && button->code == KEY_HOMEPAGE && !flg_epen_home_block) {
 		// if the home button was pressed,
 		// speed things up by immediately sending an up event.
 		
@@ -587,6 +620,9 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 			input_sync(input);
 		}
 	}
+	
+	if (state && button->code == KEY_HOMEPAGE)
+		gpio_sync_worker(false);
 }
 
 static void gpio_keys_early_suspend(struct power_suspend *handler)
