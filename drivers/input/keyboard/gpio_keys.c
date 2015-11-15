@@ -58,6 +58,8 @@ extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
 extern bool flg_pu_locktsp;
 extern bool flg_epen_home_block;
+extern bool flg_tsp_lockedout;
+extern bool flg_tsp_lockout_untilscreenoff;
 extern unsigned int sttg_pu_blockpower;
 //extern void mdnie_toggle_nightmode(void);
 extern void kcal_toggle_nightmode(void);
@@ -409,7 +411,7 @@ void gpio_sync_worker(bool pwr)
 			pr_info("%s: KEY_HOME pressed, calling sys_sync()\n", __func__);
 	}
 	if (!suspended)
-		schedule_work(&sync_system_work);
+		schedule_delayed_work_on(0, &sync_system_work, msecs_to_jiffies(2500));
 }
 
 int key_irq_state;
@@ -621,8 +623,14 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 		}
 	}
 	
-	if (state && button->code == KEY_HOMEPAGE)
+	if (state && button->code == KEY_HOMEPAGE) {
 		gpio_sync_worker(false);
+		if (flg_tsp_lockout_untilscreenoff) {
+			pr_info("[KEYS/gpio_keys_gpio_report_event] clearing flg_tsp_lockout_untilscreenoff\n");
+			flg_tsp_lockedout = false;
+			flg_tsp_lockout_untilscreenoff = false;
+		}
+	}
 }
 
 static void gpio_keys_early_suspend(struct power_suspend *handler)
