@@ -106,16 +106,13 @@ struct gpio_keys_drvdata {
 };
 
 static void sync_system(struct work_struct *work);
-static DECLARE_WORK(sync_system_work, sync_system);
+static DECLARE_DELAYED_WORK(sync_system_work, sync_system);
 struct wake_lock sync_wake_lock;
 
 static bool suspended = false;
 
 static void sync_system(struct work_struct *work)
 {
-	if (suspended)
-		msleep(5000);
-
 	pr_info("%s +\n", __func__);
 	wake_lock(&sync_wake_lock);
 	sys_sync();
@@ -398,20 +395,22 @@ static struct attribute_group gpio_keys_attr_group = {
 
 void gpio_sync_worker(bool pwr)
 {
-	/* sys_sync(); */
 	if (suspended) {
-		/*if (pwr)
-			pr_info("%s: KEY_POWER pressed, calling sys_sync() in 5 sec...\n", __func__);
-		else
-			pr_info("%s: KEY_HOME pressed, calling sys_sync() in 5 sec...\n", __func__);*/
-	} else {
-		if (pwr)
-			pr_info("%s: KEY_POWER pressed, calling sys_sync()\n", __func__);
-		else
-			pr_info("%s: KEY_HOME pressed, calling sys_sync()\n", __func__);
-	}
-	if (!suspended)
+		if (pwr) {
+			pr_info("%s: power button pressed, calling sys_sync() in 2500 msec\n", __func__);
+		} else {
+			pr_info("%s: home button pressed, calling sys_sync() in 2500 msec\n", __func__);
+		}
 		schedule_delayed_work_on(0, &sync_system_work, msecs_to_jiffies(2500));
+	} else {
+		if (pwr) {
+			pr_info("%s: power button pressed, calling sys_sync()\n", __func__);
+			schedule_delayed_work_on(0, &sync_system_work, 0);
+		} else {
+			pr_info("%s: home button pressed, calling sys_sync() in 2500 msec\n", __func__);
+			schedule_delayed_work_on(0, &sync_system_work, msecs_to_jiffies(2500));
+		}
+	}
 }
 
 int key_irq_state;
