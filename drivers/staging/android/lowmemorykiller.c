@@ -84,6 +84,9 @@ static int lowmem_minfree[6] = {
 };
 static int lowmem_minfree_size = 4;
 
+static int white_list[20] = { };
+static int white_list_size = 0;
+
 static unsigned long lowmem_deathpending_timeout;
 
 #define lowmem_print(level, x...)			\
@@ -170,6 +173,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	int other_free;
 	int other_file;
 	unsigned long nr_to_scan = sc->nr_to_scan;
+	int white_size = ARRAY_SIZE(white_list);
 #ifdef CONFIG_SEC_DEBUG_LMK_MEMINFO
 	static DEFINE_RATELIMIT_STATE(lmk_rs, DEFAULT_RATELIMIT_INTERVAL, 1);
 #endif
@@ -214,6 +218,8 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	else
 		other_file = 0;
 
+	if (white_list_size < white_size)
+		white_size = white_list_size;
 	if (lowmem_adj_size < array_size)
 		array_size = lowmem_adj_size;
 	if (lowmem_minfree_size < array_size)
@@ -251,6 +257,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 #ifdef CONFIG_SAMP_HOTNESS
 		int hotness_adj = 0;
 #endif
+		int white = 0;
 
 		if (tsk->flags & PF_KTHREAD)
 			continue;
@@ -272,6 +279,21 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		p = find_lock_task_mm(tsk);
 		if (!p)
 			continue;
+		
+		for (i = 0; i < white_size; i++) {
+			if (p->pid == white_list[i]) {
+				white = 1;
+				lowmem_print(2, "pid %d to white list", p->pid);
+				pr_info("%s: not killing whitelisted process %d (%s)\n",
+						__func__, p->pid, p->comm);
+				break;
+			}
+		}
+		
+		if (white) {
+			task_unlock(p);
+			continue;
+		}
 
 		oom_score_adj = p->signal->oom_score_adj;
 		if (oom_score_adj < min_score_adj) {
@@ -411,6 +433,7 @@ static int android_oom_handler(struct notifier_block *nb,
 	int tasksize;
 	int i;
 	int min_score_adj = OOM_SCORE_ADJ_MAX + 1;
+	int white_size = ARRAY_SIZE(white_list);
 #ifdef MULTIPLE_OOM_KILLER
 	int selected_tasksize[OOM_DEPTH] = {0,};
 	int selected_oom_score_adj[OOM_DEPTH] = {OOM_ADJUST_MAX,};
@@ -459,11 +482,15 @@ static int android_oom_handler(struct notifier_block *nb,
 #else
 	selected_oom_score_adj = min_score_adj;
 #endif
+	
+	if (white_list_size < white_size)
+		white_size = white_list_size;
 
 	read_lock(&tasklist_lock);
 	for_each_process(tsk) {
 		struct task_struct *p;
 		int oom_score_adj;
+		int white = 0;
 #ifdef MULTIPLE_OOM_KILLER
 		int is_exist_oom_task = 0;
 #endif
@@ -474,6 +501,21 @@ static int android_oom_handler(struct notifier_block *nb,
 		p = find_lock_task_mm(tsk);
 		if (!p)
 			continue;
+		
+		for (i = 0; i < white_size; i++) {
+			if (p->pid == white_list[i]) {
+				white = 1;
+				lowmem_print(2, "pid %d to white list", p->pid);
+				pr_info("%s: not killing whitelisted process %d (%s)\n",
+						__func__, p->pid, p->comm);
+				break;
+			}
+		}
+		
+		if (white) {
+			task_unlock(p);
+			continue;
+		}
 
 		oom_score_adj = p->signal->oom_score_adj;
 		if (oom_score_adj < min_score_adj) {
@@ -703,6 +745,7 @@ module_param_array_named(adj, lowmem_adj, short, &lowmem_adj_size,
 module_param_array_named(minfree, lowmem_minfree, uint, &lowmem_minfree_size,
 			 S_IRUGO | S_IWUSR);
 module_param_named(debug_level, lowmem_debug_level, uint, S_IRUGO | S_IWUSR);
+module_param_array_named(w_list, white_list, int, &white_list_size, S_IRUGO | S_IWUSR);
 #ifdef LMK_COUNT_READ
 module_param_named(lmkcount, lmk_count, uint, S_IRUGO);
 #endif
