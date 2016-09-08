@@ -68,6 +68,8 @@ static uint32_t oom_count = 0;
 #define OOM_DEPTH 4
 #endif
 
+extern int plasma_ary_lmk_protectedpids[50];
+
 static uint32_t lowmem_debug_level = 1;
 static short lowmem_adj[6] = {
 	0,
@@ -174,6 +176,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	int other_file;
 	unsigned long nr_to_scan = sc->nr_to_scan;
 	int white_size = ARRAY_SIZE(white_list);
+	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
 #ifdef CONFIG_SEC_DEBUG_LMK_MEMINFO
 	static DEFINE_RATELIMIT_STATE(lmk_rs, DEFAULT_RATELIMIT_INTERVAL, 1);
 #endif
@@ -287,6 +290,19 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 				pr_info("%s: not killing whitelisted process %d (%s)\n",
 						__func__, p->pid, p->comm);
 				break;
+			}
+		}
+		
+		// if we haven't found a white listed process, try this list.
+		if (!white) {
+			for (i = 0; i < plasma_white_size; i++) {
+				if (p->pid == plasma_ary_lmk_protectedpids[i]) {
+					white = 1;
+					lowmem_print(2, "pid %d to plasma white list", p->pid);
+					pr_info("%s: not killing plasma whitelisted process %d (%s)\n",
+							__func__, p->pid, p->comm);
+					break;
+				}
 			}
 		}
 		
@@ -434,6 +450,7 @@ static int android_oom_handler(struct notifier_block *nb,
 	int i;
 	int min_score_adj = OOM_SCORE_ADJ_MAX + 1;
 	int white_size = ARRAY_SIZE(white_list);
+	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
 #ifdef MULTIPLE_OOM_KILLER
 	int selected_tasksize[OOM_DEPTH] = {0,};
 	int selected_oom_score_adj[OOM_DEPTH] = {OOM_ADJUST_MAX,};
@@ -509,6 +526,19 @@ static int android_oom_handler(struct notifier_block *nb,
 				pr_info("%s: not killing whitelisted process %d (%s)\n",
 						__func__, p->pid, p->comm);
 				break;
+			}
+		}
+		
+		// if we haven't found a white listed process, try this list.
+		if (!white) {
+			for (i = 0; i < plasma_white_size; i++) {
+				if (p->pid == plasma_ary_lmk_protectedpids[i]) {
+					white = 1;
+					lowmem_print(2, "pid %d to plasma white list", p->pid);
+					pr_info("%s: not killing plasma whitelisted process %d (%s)\n",
+							__func__, p->pid, p->comm);
+					break;
+				}
 			}
 		}
 		
