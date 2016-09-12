@@ -69,6 +69,7 @@ static uint32_t oom_count = 0;
 #endif
 
 extern int plasma_ary_lmk_protectedpids[50];
+extern int plasma_ary_lmk_autoprotectedpids[10];
 
 static uint32_t lowmem_debug_level = 1;
 static short lowmem_adj[6] = {
@@ -129,6 +130,108 @@ static void dump_tasks_info(void)
 	}
 }
 
+<<<<<<< HEAD
+=======
+static atomic_t shift_adj = ATOMIC_INIT(0);
+static short adj_max_shift = 353;
+
+/* User knob to enable/disable adaptive lmk feature */
+static int enable_adaptive_lmk = 0;
+module_param_named(enable_adaptive_lmk, enable_adaptive_lmk, int,
+	S_IRUGO | S_IWUSR);
+
+/*
+ * This parameter controls the behaviour of LMK when vmpressure is in
+ * the range of 90-94. Adaptive lmk triggers based on number of file
+ * pages wrt vmpressure_file_min, when vmpressure is in the range of
+ * 90-94. Usually this is a pseudo minfree value, higher than the
+ * highest configured value in minfree array.
+ */
+static int vmpressure_file_min;
+module_param_named(vmpressure_file_min, vmpressure_file_min, int,
+	S_IRUGO | S_IWUSR);
+
+enum {
+	VMPRESSURE_NO_ADJUST = 0,
+	VMPRESSURE_ADJUST_ENCROACH,
+	VMPRESSURE_ADJUST_NORMAL,
+};
+
+int adjust_minadj(short *min_score_adj)
+{
+	int ret = VMPRESSURE_NO_ADJUST;
+
+	if (!enable_adaptive_lmk)
+		return 0;
+
+	if (atomic_read(&shift_adj) &&
+		(*min_score_adj > adj_max_shift)) {
+		if (*min_score_adj == OOM_SCORE_ADJ_MAX + 1)
+			ret = VMPRESSURE_ADJUST_ENCROACH;
+		else
+			ret = VMPRESSURE_ADJUST_NORMAL;
+		*min_score_adj = adj_max_shift;
+	}
+	atomic_set(&shift_adj, 0);
+
+	return ret;
+}
+
+static int lmk_vmpressure_notifier(struct notifier_block *nb,
+			unsigned long action, void *data)
+{
+	int other_free = 0, other_file = 0;
+	unsigned long pressure = action;
+	int array_size = ARRAY_SIZE(lowmem_adj);
+
+	if (!enable_adaptive_lmk)
+		return 0;
+
+	if (pressure >= 95) {
+		other_file = global_page_state(NR_FILE_PAGES) -
+			global_page_state(NR_SHMEM) -
+			total_swapcache_pages();
+		other_free = global_page_state(NR_FREE_PAGES);
+
+		atomic_set(&shift_adj, 1);
+		trace_almk_vmpressure(pressure, other_free, other_file);
+	} else if (pressure >= 90) {
+		if (lowmem_adj_size < array_size)
+			array_size = lowmem_adj_size;
+		if (lowmem_minfree_size < array_size)
+			array_size = lowmem_minfree_size;
+
+		other_file = global_page_state(NR_FILE_PAGES) -
+			global_page_state(NR_SHMEM) -
+			total_swapcache_pages();
+
+		other_free = global_page_state(NR_FREE_PAGES);
+
+		if ((other_free < lowmem_minfree[array_size - 1]) &&
+			(other_file < vmpressure_file_min)) {
+				atomic_set(&shift_adj, 1);
+				trace_almk_vmpressure(pressure, other_free,
+					other_file);
+		}
+	} else if (atomic_read(&shift_adj)) {
+		/*
+		 * shift_adj would have been set by a previous invocation
+		 * of notifier, which is not followed by a lowmem_shrink yet.
+		 * Since vmpressure has improved, reset shift_adj to avoid
+		 * false adaptive LMK trigger.
+		 */
+		trace_almk_vmpressure(pressure, other_free, other_file);
+		atomic_set(&shift_adj, 0);
+	}
+
+	return 0;
+}
+
+static struct notifier_block lmk_vmpr_nb = {
+	.notifier_call = lmk_vmpressure_notifier,
+};
+
+>>>>>>> 61798a9... lmk: apply code from samsung POK1, more plasma stuff
 static int test_task_flag(struct task_struct *p, int flag)
 {
 	struct task_struct *t = p;
@@ -151,12 +254,10 @@ static DEFINE_MUTEX(scan_mutex);
 #define SSWAP_LMK_THRESHOLD	(30720 * 2)
 #define CMA_PAGE_RATIO		70
 #endif
-
 #if defined(CONFIG_ZSWAP)
 extern atomic_t zswap_pool_pages;
 extern atomic_t zswap_stored_pages;
 #endif
-
 static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 {
 	struct task_struct *tsk;
@@ -177,6 +278,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	unsigned long nr_to_scan = sc->nr_to_scan;
 	int white_size = ARRAY_SIZE(white_list);
 	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
+	int plasma_autowhite_size = ARRAY_SIZE(plasma_ary_lmk_autoprotectedpids);
 #ifdef CONFIG_SEC_DEBUG_LMK_MEMINFO
 	static DEFINE_RATELIMIT_STATE(lmk_rs, DEFAULT_RATELIMIT_INTERVAL, 1);
 #endif
@@ -298,8 +400,25 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 			for (i = 0; i < plasma_white_size; i++) {
 				if (p->pid == plasma_ary_lmk_protectedpids[i]) {
 					white = 1;
+					p->signal->oom_score_adj = 0;
 					lowmem_print(2, "pid %d to plasma white list", p->pid);
 					pr_info("%s: not killing plasma whitelisted process %d (%s)\n",
+							__func__, p->pid, p->comm);
+					break;
+				}
+			}
+		}
+		
+		// this list is for the last few recently used apps, as added by a shell script.
+		// it is a small list that is autonomously maintained, and therefore cannot be
+		// mixed with other whitelists.
+		if (!white) {
+			for (i = 0; i < plasma_autowhite_size; i++) {
+				if (p->pid == plasma_ary_lmk_autoprotectedpids[i]) {
+					white = 1;
+					p->signal->oom_score_adj = 0;
+					lowmem_print(2, "pid %d to plasma autowhite list", p->pid);
+					pr_info("%s: not killing plasma autowhitelisted process %d (%s)\n",
 							__func__, p->pid, p->comm);
 					break;
 				}
@@ -321,11 +440,10 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		if (atomic_read(&zswap_stored_pages)) {
 			lowmem_print(3, "shown tasksize : %d\n", tasksize);
 			tasksize += atomic_read(&zswap_pool_pages) * get_mm_counter(p->mm, MM_SWAPENTS)
-				/ atomic_read(&zswap_stored_pages);
+			/ atomic_read(&zswap_stored_pages);
 			lowmem_print(3, "real tasksize : %d\n", tasksize);
 		}
 #endif
-
 #ifdef CONFIG_SAMP_HOTNESS
 		hotness_adj = p->signal->hotness_adj;
 #endif
@@ -451,6 +569,7 @@ static int android_oom_handler(struct notifier_block *nb,
 	int min_score_adj = OOM_SCORE_ADJ_MAX + 1;
 	int white_size = ARRAY_SIZE(white_list);
 	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
+	int plasma_autowhite_size = ARRAY_SIZE(plasma_ary_lmk_autoprotectedpids);
 #ifdef MULTIPLE_OOM_KILLER
 	int selected_tasksize[OOM_DEPTH] = {0,};
 	int selected_oom_score_adj[OOM_DEPTH] = {OOM_ADJUST_MAX,};
@@ -534,8 +653,25 @@ static int android_oom_handler(struct notifier_block *nb,
 			for (i = 0; i < plasma_white_size; i++) {
 				if (p->pid == plasma_ary_lmk_protectedpids[i]) {
 					white = 1;
+					p->signal->oom_score_adj = 0;
 					lowmem_print(2, "pid %d to plasma white list", p->pid);
 					pr_info("%s: not killing plasma whitelisted process %d (%s)\n",
+							__func__, p->pid, p->comm);
+					break;
+				}
+			}
+		}
+		
+		// this list is for the last few recently used apps, as added by a shell script.
+		// it is a small list that is autonomously maintained, and therefore cannot be
+		// mixed with other whitelists.
+		if (!white) {
+			for (i = 0; i < plasma_autowhite_size; i++) {
+				if (p->pid == plasma_ary_lmk_autoprotectedpids[i]) {
+					white = 1;
+					p->signal->oom_score_adj = 0;
+					lowmem_print(2, "pid %d to plasma autowhite list", p->pid);
+					pr_info("%s: not killing plasma autowhitelisted process %d (%s)\n",
 							__func__, p->pid, p->comm);
 					break;
 				}
@@ -553,6 +689,14 @@ static int android_oom_handler(struct notifier_block *nb,
 			continue;
 		}
 		tasksize = get_mm_rss(p->mm);
+#if defined(CONFIG_ZSWAP)
+		if (atomic_read(&zswap_stored_pages)) {
+			lowmem_print(3, "shown tasksize : %d\n", tasksize);
+			tasksize += atomic_read(&zswap_pool_pages) * get_mm_counter(p->mm, MM_SWAPENTS)
+			/ atomic_read(&zswap_stored_pages);
+			lowmem_print(3, "real tasksize : %d\n", tasksize);
+		}
+#endif
 		task_unlock(p);
 		if (tasksize <= 0)
 			continue;
@@ -655,7 +799,7 @@ static int android_oom_handler(struct notifier_block *nb,
 #endif
 	read_unlock(&tasklist_lock);
 
-	lowmem_print(2, "oom: get memory %lu", *freed);
+	lowmem_print(1, "oom: get memory %lu", *freed);
 	return rem;
 }
 
