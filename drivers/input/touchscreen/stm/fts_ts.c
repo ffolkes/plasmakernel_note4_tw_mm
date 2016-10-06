@@ -3051,7 +3051,7 @@ static int fts_start_device(struct fts_ts_info *info)
 		}
 #endif
 		fts_command(info, FLUSHBUFFER);
-
+#endif
 		if (device_may_wakeup(&info->client->dev))
 			disable_irq_wake(info->client->irq);
 
