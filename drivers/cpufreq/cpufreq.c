@@ -2410,7 +2410,7 @@ int cpufreq_update_policy(unsigned int cpu)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
 	struct cpufreq_policy new_policy;
-	struct cpufreq_policy *cpu0_policy = cpufreq_cpu_get(0);
+//	struct cpufreq_policy *cpu0_policy = cpufreq_cpu_get(0);
 	int ret;
 
 	if (!policy) {
