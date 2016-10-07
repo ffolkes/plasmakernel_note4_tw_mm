@@ -45,6 +45,7 @@
 #include <linux/sw_sync.h>
 #include <linux/file.h>
 #include <linux/kthread.h>
+#include <linux/sched/rt.h>
 
 #include <mach/board.h>
 #include <mach/memory.h>
@@ -1027,6 +1028,7 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 static int mdss_fb_start_disp_thread(struct msm_fb_data_type *mfd)
 {
 	int ret = 0;
+	cpumask_t cpumask;
 
 	pr_debug("%pS: start display thread fb%d\n",
 		__builtin_return_address(0), mfd->index);
@@ -1036,6 +1038,12 @@ static int mdss_fb_start_disp_thread(struct msm_fb_data_type *mfd)
 	atomic_set(&mfd->commits_pending, 0);
 	mfd->disp_thread = kthread_run(__mdss_fb_display_thread,
 				mfd, "mdss_fb%d", mfd->index);
+	
+	// affine thread to cpu 0+1 only.
+	cpumask_clear(&cpumask);
+	cpumask_set_cpu(0, &cpumask);
+	cpumask_set_cpu(1, &cpumask);
+	set_cpus_allowed(mfd->disp_thread, cpumask);
 
 	if (IS_ERR(mfd->disp_thread)) {
 		pr_err("ERROR: unable to start display thread %d\n",
@@ -2492,7 +2500,8 @@ static int __mdss_fb_display_thread(void *data)
 	 * realtime scheduling to process display updates and interact with
 	 * other real time and normal priority tasks
 	 */
-	param.sched_priority = 16;
+	//pr_info("mdss_fb priority set to %d minus 3\n", MAX_RT_PRIO);
+	param.sched_priority = 40;//MAX_RT_PRIO - 3;
 	ret = sched_setscheduler(current, SCHED_FIFO, &param);
 	if (ret)
 		pr_warn("set priority failed for fb%d display thread\n",
