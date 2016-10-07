@@ -25,6 +25,8 @@ EXPORT_SYMBOL_GPL(cpu_subsys);
 static DEFINE_PER_CPU(struct device *, cpu_sys_devices);
 
 #ifdef CONFIG_HOTPLUG_CPU
+static bool sttg_hotplug_lock = 0;
+
 static void change_cpu_under_node(struct cpu *cpu,
 			unsigned int from_nid, unsigned int to_nid)
 {
@@ -51,6 +53,11 @@ static ssize_t __ref store_online(struct device *dev,
 	int cpuid = cpu->dev.id;
 	int from_nid, to_nid;
 	ssize_t ret;
+	
+	if (sttg_hotplug_lock) {
+		pr_info("[cpu/%s] hotplug lock set, ignoring request of '%d' for cpu%d\n", __func__, buf[0], cpuid);
+		return count;
+	}
 
 	cpu_hotplug_driver_lock();
 	switch (buf[0]) {
@@ -85,9 +92,35 @@ static ssize_t __ref store_online(struct device *dev,
 }
 static DEVICE_ATTR(online, 0644, show_online, store_online);
 
+static ssize_t show_hotplug_lock(struct device *dev,
+						   struct device_attribute *attr,
+						   char *buf)
+{
+	return sprintf(buf, "%u\n", sttg_hotplug_lock);
+}
+
+static ssize_t __ref store_hotplug_lock(struct device *dev,
+								  struct device_attribute *attr,
+								  const char *buf, size_t count)
+{
+	int val;
+	
+	sscanf(buf, "%d", &val);
+	
+	sttg_hotplug_lock = val;
+	
+	pr_info("[cpu/%s] sttg_hotplug_lock has been set to: %u\n", __func__, sttg_hotplug_lock);
+	
+	return count;
+}
+static DEVICE_ATTR(hotplug_lock, 0644, show_hotplug_lock, store_hotplug_lock);
+
 static void __cpuinit register_cpu_control(struct cpu *cpu)
 {
 	device_create_file(&cpu->dev, &dev_attr_online);
+	
+	if (!cpu->dev.id)
+		device_create_file(&cpu->dev, &dev_attr_hotplug_lock);
 }
 void unregister_cpu(struct cpu *cpu)
 {
@@ -96,6 +129,9 @@ void unregister_cpu(struct cpu *cpu)
 	unregister_cpu_under_node(logical_cpu, cpu_to_node(logical_cpu));
 
 	device_remove_file(&cpu->dev, &dev_attr_online);
+	
+	if (!cpu->dev.id)
+		device_remove_file(&cpu->dev, &dev_attr_hotplug_lock);
 
 	device_unregister(&cpu->dev);
 	per_cpu(cpu_sys_devices, logical_cpu) = NULL;
