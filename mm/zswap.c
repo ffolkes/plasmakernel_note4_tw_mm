@@ -410,7 +410,7 @@ static inline void zswap_page_pool_destroy(void)
 	mempool_destroy(zswap_page_pool);
 }
 
-/*static struct page *zswap_alloc_page(gfp_t flags)
+static struct page *zswap_alloc_page(gfp_t flags)
 {
 	struct page *page;
 
@@ -435,7 +435,7 @@ static void zswap_free_page(struct page *page)
 static struct zs_ops zswap_zs_ops = {
 	.alloc = zswap_alloc_page,
 	.free = zswap_free_page
-};*/
+};
 
 
 /*********************************
