@@ -14,6 +14,7 @@
 #define LOGTAG "[touchkey"
 
 extern bool flg_power_suspended;
+extern bool flg_power_softsuspended;
 extern struct timeval time_power_resumed;
 extern bool plasma_media_active;
 extern unsigned int pu_recording_end(void);
@@ -29,8 +30,11 @@ extern void press_power(void);
 extern bool tw_trip(void);
 extern bool sttg_pu_allow_tks;
 extern bool sttg_pu_allow_mediamode;
+extern bool sttg_tk_nohold;
 extern bool pu_checkLockout(void);
 extern int touch_x_start;
+extern int plasma_tsp_touchcount;
+extern int tsp_active_finger;
 extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
 						  int input_cycles, int devfreq_max_cycles, int devfreq_mid_cycles,
@@ -103,6 +107,7 @@ extern unsigned int sttg_tkf_key1_key_code;
 extern unsigned int sttg_tkf_key2_key_code;
 extern bool flg_tkf_tsp;
 extern bool flg_tkf_tsp_waiting;
+extern bool flg_tkf_spent;
 
 // tk slide.
 extern bool sttg_tks_mode;
@@ -119,7 +124,7 @@ static unsigned int tkf_active_keycode = 0;
 static bool tkf_active_key_state = false;
 struct timeval time_tkf_fingerdown;
 static void tkf_press_down_work(struct work_struct * work_tkf_press_down);
-static DECLARE_DELAYED_WORK(work_tkf_press_down, tkf_press_down_work);
+DECLARE_DELAYED_WORK(work_tkf_press_down, tkf_press_down_work);
 
 static void cypress_touchkey_reset(struct cypress_touchkey_info *info);
 
@@ -726,7 +731,7 @@ static void tkf_press_down_work(struct work_struct * work_tkf_press_down)
 {
 	pr_info(LOGTAG"/tkf_press_down_work] starting\n");
 	
-	if (flg_tkf_tsp) {
+	if (flg_tkf_tsp || flg_tkf_tsp_waiting || flg_tkf_spent) {
 		// the tsp saw a valid event near the tk.
 		// do nothing and end this tk event.
 		
@@ -744,7 +749,7 @@ static void tkf_press_down_work(struct work_struct * work_tkf_press_down)
 		input_sync(input_dev_tk);
 		
 		// if it was released, send that too.
-		if (!tkf_active_key_state) {
+		if (!tkf_active_key_state || sttg_tk_nohold) {
 			// the tk has been released.
 			
 			pr_info(LOGTAG"/tkf_press_down_work] pressing: %d, 0\n", tkf_active_keycode);
@@ -816,7 +821,7 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 		}
 		goto out;
 	}
-	
+
 	if (flg_power_suspended) {
 		if (tw_trip() || (touch_x_start >= 0 && tkf_active_code == -1)) {
 			// if this is a touchwake trip, ignore the input.
@@ -848,11 +853,11 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 	
 	tk_key_keycode = tk_applyCustomkeycode(code, info->keycode[code]);
 	
-	pr_info(LOGTAG"/cypress_touchkey_interrupt] touch_x_start: %d, tkf_active_code: %d, press: %d, code: %d, tkf_active_key_state: %d\n",
-		   touch_x_start, tkf_active_code, press, code, tkf_active_key_state);
+	pr_info(LOGTAG"/cypress_touchkey_interrupt] touch_x_start: %d, tkf_active_code: %d, press: %d, code: %d, tkf_active_key_state: %d, touchcount: %d\n",
+		   touch_x_start, tkf_active_code, press, code, tkf_active_key_state, plasma_tsp_touchcount);
 	
 	if (
-		((touch_x_start < 1  // don't allow tkf if the tsp is already being touched
+		(((plasma_tsp_touchcount <= 0 || tsp_active_finger == 1)  // don't allow tkf if the tsp is already being touched, but allow it if we're wpmk is blocking finger 0
 		  || tkf_active_code > -1)  // when we slide, we are sloppy, so we have to allow errant tsp contact
 		 || (!press && code == tkf_active_code && tkf_active_key_state)  // but allow tkf release
 		)
@@ -983,13 +988,14 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 				// check to see if there was a queued event.
 				if (tkf_active_code >= 0) {
 					// yes, there is, so manually process the buffered input event now,
-					// since the user is expecting to be pressed but we just cancelled the job.
+					// since the user is expecting it to be pressed but we just cancelled the job.
 					
 					// only do this if the pu_lockout is off.
 					if (!pu_checkLockout()) {
 						input_report_key(info->input_dev, tkf_active_keycode, 1);
 						input_sync(info->input_dev);
-						msleep(10);
+						//msleep(10);
+						usleep_range(10000, 10000);
 						input_report_key(info->input_dev, tkf_active_keycode, 0);
 						input_sync(info->input_dev);
 					}
@@ -1063,7 +1069,7 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 	}
 	
 	// don't allow input if tkf is active and the tsp was touched.
-	if (touch_x_start >= 0 && press) {
+	if (plasma_tsp_touchcount > 0 && press) {
 		pr_info(LOGTAG"/cypress_touchkey_interrupt] blocking tk because tsp was already touched\n");
 		tk_refreshTSPblock();
 		return IRQ_HANDLED;
@@ -1146,6 +1152,14 @@ static irqreturn_t cypress_touchkey_interrupt(int irq, void *dev_id)
 
 	input_report_key(info->input_dev, tk_key_keycode, press);
 	input_sync(info->input_dev);
+	
+	if (sttg_tk_nohold) {
+		// immediately send up event.
+		
+		pr_info("[TOUCHKEY] nohold, immediately releasing code: %d, press: %d, keycode: %d, sent: %d \n", code, 0, info->keycode[code], tk_key_keycode);
+		input_report_key(info->input_dev, tk_key_keycode, 0);
+		input_sync(info->input_dev);
+	}
 
 /*#ifdef TKEY_BOOSTER
 	if (info->tkey_booster->dvfs_set)
@@ -1462,7 +1476,7 @@ static ssize_t cypress_touchkey_led_control(struct device *dev,
 			__func__, data);
 		return size;
 	}
-	
+
 	// always keep the leds off when locked.
 	if (flg_pu_locktsp) {
 		data = 0;
@@ -1891,7 +1905,7 @@ static ssize_t boost_level_store(struct device *dev,
 #ifdef CONFIG_CPUFREQ_HARDLIMIT
         info->tkey_booster->dvfs_freq = check_cpufreq_hardlimit(touchboost_lo_freq);
 #else
-        info->tkey_booster->dvfs_freq = MIN_TOUCH_LIMIT_SECOND;
+		info->tkey_booster->dvfs_freq = MIN_TOUCH_LIMIT_SECOND;
 #endif
 		dev_info(&info->client->dev,
 			"%s: boost_mode DUAL, dvfs_freq = %d\n",
@@ -1900,7 +1914,7 @@ static ssize_t boost_level_store(struct device *dev,
 #ifdef CONFIG_CPUFREQ_HARDLIMIT
         info->tkey_booster->dvfs_freq = check_cpufreq_hardlimit(touchboost_hi_freq);
 #else
-        info->tkey_booster->dvfs_freq = MIN_TOUCH_LIMIT;
+		info->tkey_booster->dvfs_freq = MIN_TOUCH_LIMIT;
 #endif
 		dev_info(&info->client->dev,
 			"%s: boost_mode SINGLE, dvfs_freq = %d\n",
@@ -2802,14 +2816,19 @@ static int cypress_touchkey_remove(struct i2c_client *client)
 static void cypress_input_close(struct input_dev *dev)
 {
 	struct cypress_touchkey_info *info = input_get_drvdata(dev);
-	
+
 	pr_info(LOGTAG"/cypress_input_close]\n");
 	
+	// reset.
+	tkf_active_code = -1;
+
 	// if tk slide is enabled, or tk flick is enabled and tkf media mode is on
 	// and media is playing, keep the touchkeys on.
 	if (sttg_tks_mode == 1 || (sttg_tks_mode == 2 && plasma_media_active)
-		|| (sttg_tkf_mode && plasma_media_active && sttg_tkf_mediamode))
+		|| (sttg_tkf_mode && plasma_media_active && sttg_tkf_mediamode)) {
+		pr_info(LOGTAG"/cypress_input_close] aborting because touchkeys requested to stay on\n");
 		return;
+	}
 
 	dev_info(&info->client->dev, "%s\n",__func__);
 
@@ -2844,8 +2863,14 @@ static int cypress_input_open(struct input_dev *dev)
 {
 	struct cypress_touchkey_info *info = input_get_drvdata(dev);
 	int ret = 0;
-	
+
 	pr_info(LOGTAG"/cypress_input_open]\n");
+	
+	// reset.
+	tkf_active_code = -1;
+	
+	if (flg_power_softsuspended)
+		return 0;
 
 	dev_info(&info->client->dev, "%s\n",__func__);
 	if (wake_lock_active(&info->fw_wakelock)) {
@@ -2896,6 +2921,15 @@ out:
 #endif
 
 	return ret;
+}
+void plasma_tkey_suspend(int mode)
+{
+	pr_info(LOGTAG"/plasma_tkey_suspend] starting, mode: %d\n", mode);
+	
+	if (mode > 0)
+		cypress_input_close(input_dev_tk);
+	else
+		cypress_input_open(input_dev_tk);
 }
 #endif
 
