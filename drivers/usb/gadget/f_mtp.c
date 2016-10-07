@@ -67,6 +67,10 @@
 #define MTP_RESPONSE_OK             0x2001
 #define MTP_RESPONSE_DEVICE_BUSY    0x2019
 
+extern int flg_ctr_cpuboost_allcores;
+extern int flg_ctr_cpuboost_mid;
+extern int flg_ctr_userspaceboost;
+
 unsigned int mtp_rx_req_len = MTP_BULK_BUFFER_SIZE;
 module_param(mtp_rx_req_len, uint, S_IRUGO | S_IWUSR);
 
@@ -705,6 +709,12 @@ static ssize_t mtp_write(struct file *fp, const char __user *buf,
 			r = -EFAULT;
 			break;
 		}
+		
+		if (flg_ctr_cpuboost_mid < 10)
+			flg_ctr_cpuboost_mid = 10;
+		
+		if (flg_ctr_userspaceboost < 10)
+			flg_ctr_userspaceboost = 10;
 
 		req->length = xfer;
 		ret = usb_ep_queue(dev->ep_in, req, GFP_KERNEL);
@@ -789,6 +799,15 @@ static void send_file_work(struct work_struct *data)
 			r = ret;
 			break;
 		}
+		
+		if (flg_ctr_cpuboost_mid < 20)
+			flg_ctr_cpuboost_mid = 20;
+		
+		if (flg_ctr_userspaceboost < 20)
+			flg_ctr_userspaceboost = 20;
+		
+		if (flg_ctr_cpuboost_allcores < 20)
+			flg_ctr_cpuboost_allcores = 20;
 
 		if (count > mtp_tx_req_len)
 			xfer = mtp_tx_req_len;
