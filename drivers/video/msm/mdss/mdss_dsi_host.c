@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/iopoll.h>
 #include <linux/kthread.h>
+#include <linux/sched/rt.h>
 
 #include <linux/msm_iommu_domains.h>
 
@@ -82,6 +83,9 @@ struct mdss_dsi_ctrl_pdata **mdss_dsi_get_ctrl(void)
 
 void mdss_dsi_ctrl_init(struct mdss_dsi_ctrl_pdata *ctrl)
 {
+	struct task_struct *thread;
+	cpumask_t cpumask;
+	
 	if (ctrl->panel_data.panel_info.pdest == DISPLAY_1) {
 		mdss_dsi0_hw.ptr = (void *)(ctrl);
 		ctrl->dsi_hw = &mdss_dsi0_hw;
@@ -115,9 +119,15 @@ void mdss_dsi_ctrl_init(struct mdss_dsi_ctrl_pdata *ctrl)
 
 
 	if (dsi_event.inited == 0) {
-		kthread_run(dsi_event_thread, (void *)&dsi_event,
+		thread = kthread_run(dsi_event_thread, (void *)&dsi_event,
 						"mdss_dsi_event");
 		dsi_event.inited  = 1;
+		
+		// affine thread to cpu 0+1 only.
+		cpumask_clear(&cpumask);
+		cpumask_set_cpu(0, &cpumask);
+		cpumask_set_cpu(1, &cpumask);
+		set_cpus_allowed(thread, cpumask);
 	}
 }
 
@@ -1091,7 +1101,7 @@ end:
 	return rp->len;
 }
 
-#define DMA_TX_TIMEOUT 1000
+#define DMA_TX_TIMEOUT 7000
 
 static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 					struct dsi_buf *tp)
@@ -1548,7 +1558,7 @@ static int dsi_event_thread(void *data)
 	u32 todo = 0;
 	int ret;
 
-	param.sched_priority = 16;
+	param.sched_priority = 16; //MAX_RT_PRIO - 3;
 	ret = sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
 	if (ret)
 		pr_err("%s: set priority failed\n", __func__);
