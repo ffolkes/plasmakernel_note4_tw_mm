@@ -39,6 +39,7 @@
 #include <linux/sec_class.h>
 
 extern bool flg_power_suspended;
+extern bool flg_power_softsuspended;
 extern int do_timesince(struct timeval time_start);
 extern unsigned int pu_recording_end(void);
 extern int plasma_process_gpio_button_state(int keycode, int state);
@@ -51,6 +52,7 @@ extern void vk_press_button_safe(int keycode, bool delayed, bool force, bool ela
 extern bool sttg_pu_tamperevident;
 extern bool sttg_pu_warnled;
 extern unsigned int sttg_gpio_key172_nohold;
+extern unsigned int sttg_gpio_key172_plasmapoweron;
 extern unsigned int sttg_mb_dp_home_screenoff_key_code;
 extern unsigned int sttg_mb_dp_home_screenoff_key_delay;
 extern bool pu_valid(void);
@@ -63,6 +65,8 @@ extern bool flg_tsp_lockout_untilscreenoff;
 extern unsigned int sttg_pu_blockpower;
 //extern void mdnie_toggle_nightmode(void);
 extern void kcal_toggle_nightmode(void);
+extern unsigned int sttg_pu_mode;
+extern bool pu_valid_pattern(void);
 
 struct timeval time_pressed_homekey;
 struct timeval time_pressed_home;
@@ -544,6 +548,37 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 		
 		if (flg_power_suspended)
 			time_pressed_homewhileoff = time_pressed_home;
+		
+		if (flg_power_suspended
+			&& sttg_gpio_key172_plasmapoweron) {
+			
+			if (sttg_pu_mode > 0
+				&& sttg_pu_blockpower > 1
+				&& pu_valid_pattern()) {
+				// modes 2 or 3.
+				// if we want to block home from turning the phone on, then do it now.
+				flg_skip_next = true;
+				return;
+			}
+			
+			// turn on.
+			vk_press_button_safe(-116, false, false, false, false);
+			
+			// don't send button-up.
+			flg_skip_next = true;
+			return;
+		}
+		
+		if (!flg_power_suspended
+			&& flg_power_softsuspended) {
+			
+			// turn off always on app.
+			vk_press_button_safe(1999, false, false, false, false);
+			
+			// don't send button-up.
+			flg_skip_next = true;
+			return;
+		}
 		
 		if (sttg_mb_dp_home_screenoff_key_code
 			&& !flg_power_suspended
