@@ -45,6 +45,10 @@
 #include <linux/fs.h>
 
 #include <linux/ratelimit.h>
+#include <linux/vmpressure.h>
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/almk.h>
 
 #define LMK_COUNT_READ
 
@@ -65,7 +69,7 @@ static uint32_t oom_count = 0;
 #endif
 
 #ifdef MULTIPLE_OOM_KILLER
-#define OOM_DEPTH 4
+#define OOM_DEPTH 7
 #endif
 
 extern int plasma_ary_lmk_protectedpids[50];
@@ -130,8 +134,6 @@ static void dump_tasks_info(void)
 	}
 }
 
-<<<<<<< HEAD
-=======
 static atomic_t shift_adj = ATOMIC_INIT(0);
 static short adj_max_shift = 353;
 
@@ -231,7 +233,6 @@ static struct notifier_block lmk_vmpr_nb = {
 	.notifier_call = lmk_vmpressure_notifier,
 };
 
->>>>>>> 61798a9... lmk: apply code from samsung POK1, more plasma stuff
 static int test_task_flag(struct task_struct *p, int flag)
 {
 	struct task_struct *t = p;
@@ -265,6 +266,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	int rem = 0;
 	int tasksize;
 	int i;
+	int ret = 0;
 	short min_score_adj = OOM_SCORE_ADJ_MAX + 1;
 	int minfree = 0;
 	int selected_tasksize = 0;
@@ -336,10 +338,13 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 			break;
 		}
 	}
-	if (nr_to_scan > 0)
+	if (nr_to_scan > 0) {
+		ret = adjust_minadj(&min_score_adj);
 		lowmem_print(3, "lowmem_shrink %lu, %x, ofree %d %d, ma %hd\n",
 				nr_to_scan, sc->gfp_mask, other_free,
 				other_file, min_score_adj);
+	}
+
 	rem = global_page_state(NR_ACTIVE_ANON) +
 		global_page_state(NR_ACTIVE_FILE) +
 		global_page_state(NR_INACTIVE_ANON) +
@@ -350,6 +355,10 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 
 		if (nr_to_scan > 0)
 			mutex_unlock(&scan_mutex);
+
+		if ((min_score_adj == OOM_SCORE_ADJ_MAX + 1) &&
+			(nr_to_scan > 0))
+			trace_almk_shrink(0, ret, other_free, other_file, 0);
 
 		return rem;
 	}
@@ -534,8 +543,12 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		msleep_interruptible(20);
 		if(reclaim_state)
 			reclaim_state->reclaimed_slab = selected_tasksize;
-	} else
+		trace_almk_shrink(selected_tasksize, ret,
+			other_free, other_file, selected_oom_score_adj);
+	} else {
+		trace_almk_shrink(1, ret, other_free, other_file, 0);
 		rcu_read_unlock();
+	}
 
 	lowmem_print(4, "lowmem_shrink %lu, %x, return %d\n",
 		     nr_to_scan, sc->gfp_mask, rem);
@@ -816,6 +829,7 @@ static struct shrinker lowmem_shrinker = {
 static int __init lowmem_init(void)
 {
 	register_shrinker(&lowmem_shrinker);
+	vmpressure_notifier_register(&lmk_vmpr_nb);
 #ifdef CONFIG_SEC_OOM_KILLER
 	register_oom_notifier(&android_oom_notifier);
 #endif
