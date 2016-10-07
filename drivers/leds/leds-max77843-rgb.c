@@ -86,15 +86,19 @@
 
 extern bool pu_checkBlackout(void);
 extern bool sttg_pu_blockleds;
+extern int plasma_sensor_rgblight_data_l;
+
+bool flg_plasma_fled_lock = false;
 
 static bool sttg_fled_fade = 0;
 static unsigned int sttg_fled_powermode = 0;
+static unsigned int sttg_fled_lux = 25;
 static unsigned int sttg_fled_high_r_gain = 215;
 static unsigned int sttg_fled_high_g_gain = 210;
 static unsigned int sttg_fled_high_b_gain = 80;
-static unsigned int sttg_fled_low_r_gain = 15;
-static unsigned int sttg_fled_low_g_gain = 10;
-static unsigned int sttg_fled_low_b_gain = 7;
+static unsigned int sttg_fled_low_r_gain = 35;
+static unsigned int sttg_fled_low_g_gain = 28;
+static unsigned int sttg_fled_low_b_gain = 25;
 static unsigned int sttg_fled_charged_r_gain = 80;
 static unsigned int sttg_fled_charged_g_gain = 255;
 static unsigned int sttg_fled_charged_b_gain = 80;
@@ -211,6 +215,8 @@ static void max77843_rgb_set(struct led_classdev *led_cdev,
 
 	dev = led_cdev->dev;
 	n = ret;
+	
+	pr_info("leds-max77843-rgb: %s, %d\n", __func__, n);
 
 	if (brightness == LED_OFF) {
 		/* Flash OFF */
@@ -221,6 +227,33 @@ static void max77843_rgb_set(struct led_classdev *led_cdev,
 			return;
 		}
 	} else {
+		
+		if (led_lowpower_mode == 1 || (!sttg_fled_powermode && plasma_sensor_rgblight_data_l < sttg_fled_lux)) {
+			switch (n) {
+				case 1:
+					brightness = (brightness * sttg_fled_low_r_gain) / 255;
+					break;
+				case 2:
+					brightness = (brightness * sttg_fled_low_g_gain) / 255;
+					break;
+				case 3:
+					brightness = (brightness * sttg_fled_low_b_gain) / 255;
+					break;
+			}
+		} else {
+			switch (n) {
+				case 1:
+					brightness = (brightness * sttg_fled_high_r_gain) / 255;
+					break;
+				case 2:
+					brightness = (brightness * sttg_fled_high_g_gain) / 255;
+					break;
+				case 3:
+					brightness = (brightness * sttg_fled_high_b_gain) / 255;
+					break;
+			}
+		}
+		
 		/* Set current */
 		ret = max77843_write_reg(max77843_rgb->i2c,
 				MAX77843_LED_REG_LED0BRT + n, brightness);
@@ -247,7 +280,7 @@ static void max77843_rgb_set_state(struct led_classdev *led_cdev,
 	int n;
 	int ret;
 
-	//pr_info("leds-max77843-rgb: %s\n", __func__);
+	pr_info("leds-max77843-rgb: %s\n", __func__);
 
 	ret = max77843_rgb_number(led_cdev, &max77843_rgb);
 
@@ -468,7 +501,7 @@ void controlFrontLED(unsigned int r, unsigned int g, unsigned int b)
 	
 	pr_info("[LED/controlFrontLED] control led\n");
 	
-	queue_work_on(0, wq_controlFrontLED, &work_controlFrontLED);
+	queue_work(wq_controlFrontLED, &work_controlFrontLED);
 	
 }
 EXPORT_SYMBOL(controlFrontLED);
@@ -522,6 +555,11 @@ static void timerhandler_alternatefrontled(unsigned long data)
 void alternateFrontLED(unsigned int duty1, unsigned int r1, unsigned int g1, unsigned int b1,
 					   unsigned int duty2, unsigned int r2, unsigned int g2, unsigned int b2)
 {
+	if (flg_plasma_fled_lock) {
+		pr_info("[LED/alternateFrontLED] locked out, skipping\n");
+		return;
+	}
+	
 	if ((pu_checkBlackout() && sttg_pu_blockleds)
 		|| !duty1 || !duty2) {
 		// disable it if we're locked out and leds are blocked,
@@ -603,7 +641,13 @@ EXPORT_SYMBOL(flashFrontLED);
 static ssize_t show_max77843_rgb_lowpower(struct device *dev,
 									 struct device_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%d\n", led_lowpower_mode);
+	if (!sttg_fled_powermode && sttg_fled_lux > 0) {
+			if (plasma_sensor_rgblight_data_l < sttg_fled_lux)
+				return sprintf(buf, "%d\n", 2);
+			else
+				return sprintf(buf, "%d\n", 3);
+	} else
+		return sprintf(buf, "%d\n", led_lowpower_mode);
 }
 
 static ssize_t store_max77843_rgb_lowpower(struct device *dev,
@@ -925,7 +969,7 @@ static ssize_t store_max77843_rgb_blink(struct device *dev,
 
 	/* In user case, LED current is restricted to less than 2mA */
 	
-	if (led_lowpower_mode == 1) {
+	if (led_lowpower_mode == 1 || (!sttg_fled_powermode && plasma_sensor_rgblight_data_l < sttg_fled_lux)) {
 		led_r_brightness = (led_r_brightness * sttg_fled_low_r_gain) / 255;
 		led_g_brightness = (led_g_brightness * sttg_fled_low_g_gain) / 255;
 		led_b_brightness = (led_b_brightness * sttg_fled_low_b_gain) / 255;
@@ -1016,7 +1060,7 @@ static ssize_t store_led_r(struct device *dev,
 	}
 	pr_info("[FLED/red] was r: %d\n", brightness);
 	
-	if (led_lowpower_mode == 1)
+	if (led_lowpower_mode == 1 || (!sttg_fled_powermode && plasma_sensor_rgblight_data_l < sttg_fled_lux))
 		brightness = (brightness * sttg_fled_low_r_gain) / 255;
 	else
 		brightness = (brightness * sttg_fled_high_r_gain) / 255;
@@ -1058,7 +1102,7 @@ static ssize_t store_led_g(struct device *dev,
 	}
 	pr_info("[FLED/green] was g: %d\n", brightness);
 	
-	if (led_lowpower_mode == 1)
+	if (led_lowpower_mode == 1 || (!sttg_fled_powermode && plasma_sensor_rgblight_data_l < sttg_fled_lux))
 		brightness = (brightness * sttg_fled_low_g_gain) / 255;
 	else
 		brightness = (brightness * sttg_fled_high_g_gain) / 255;
@@ -1100,7 +1144,7 @@ static ssize_t store_led_b(struct device *dev,
 	}
 	pr_info("[FLED/blue] was b: %d\n", brightness);
 	
-	if (led_lowpower_mode == 1)
+	if (led_lowpower_mode == 1 || (!sttg_fled_powermode && plasma_sensor_rgblight_data_l < sttg_fled_lux))
 		brightness = (brightness * sttg_fled_low_b_gain) / 255;
 	else
 		brightness = (brightness * sttg_fled_high_b_gain) / 255;
@@ -1168,6 +1212,31 @@ static ssize_t store_fled_powermode(struct device *dev,
 			led_lowpower_mode = 0;
 		
 		pr_info("[FLED] STORE - sttg_fled_powermode has been set to: %d\n", data);
+	}
+	
+	return count;
+}
+
+static ssize_t show_fled_lux(struct device *dev,
+								   struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", sttg_fled_lux);
+}
+
+static ssize_t store_fled_lux(struct device *dev,
+									struct device_attribute *attr,
+									const char *buf, size_t count)
+{
+	unsigned int ret;
+	unsigned int data;
+	
+	ret = sscanf(buf, "%u\n", &data);
+	
+	if (ret && data >= 0 && data <= 500) {
+		
+		sttg_fled_lux = data;
+		
+		pr_info("[FLED] STORE - sttg_fled_lux has been set to: %d\n", data);
 	}
 	
 	return count;
@@ -1726,6 +1795,7 @@ static DEVICE_ATTR(led_brightness, 0660, NULL, store_max77843_rgb_brightness);
 static DEVICE_ATTR(led_lowpower, 0660, show_max77843_rgb_lowpower, store_max77843_rgb_lowpower);
 static DEVICE_ATTR(fled_fade, 0660, show_fled_fade, store_fled_fade);
 static DEVICE_ATTR(fled_powermode, 0660, show_fled_powermode, store_fled_powermode);
+static DEVICE_ATTR(fled_lux, 0660, show_fled_lux, store_fled_lux);
 static DEVICE_ATTR(fled_high_r_gain, 0660, show_fled_high_r_gain, store_fled_high_r_gain);
 static DEVICE_ATTR(fled_high_g_gain, 0660, show_fled_high_g_gain, store_fled_high_g_gain);
 static DEVICE_ATTR(fled_high_b_gain, 0660, show_fled_high_b_gain, store_fled_high_b_gain);
@@ -1769,6 +1839,7 @@ static struct attribute *sec_led_attributes[] = {
 	&dev_attr_led_lowpower.attr,
 	&dev_attr_fled_fade.attr,
 	&dev_attr_fled_powermode.attr,
+	&dev_attr_fled_lux.attr,
 	&dev_attr_fled_high_r_gain.attr,
 	&dev_attr_fled_high_g_gain.attr,
 	&dev_attr_fled_high_b_gain.attr,
@@ -1876,7 +1947,7 @@ static int max77843_rgb_probe(struct platform_device *pdev)
 #endif
 	max77843led_dev = dev;
 	
-	wq_controlFrontLED = alloc_workqueue("controlFrontLED_wq", WQ_HIGHPRI, 0);
+	wq_controlFrontLED = alloc_workqueue("controlFrontLED_wq", WQ_HIGHPRI | WQ_UNBOUND, 0);
 	
 	INIT_WORK(&work_controlFrontLED, controlFrontLED_work);
 	
