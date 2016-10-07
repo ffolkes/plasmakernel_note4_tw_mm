@@ -71,18 +71,30 @@ extern unsigned int sttg_epen_sidehold_key_delay;
 extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern void press_power(void);
 extern bool flg_power_suspended;
+//extern void tsp_releaseall(void);
 
 int epen_x_start = 0;
 int epen_y_start = 0;
+int epen_wacx_start = 0;
+int epen_wacy_start = 0;
+int epen_w_max = 0;
 int epen_x_cur = 0;
 int epen_y_cur = 0;
+static int ary_inject_epen_x[200];
+static int ary_inject_epen_y[200];
+static int ary_inject_epen_w[200];
 int ctr_epen_events = 0;
+static int ctr_epen_saved_events = 0;
 static int avg = 0;
 static bool flg_epen_ignoreinput = false;
 static bool flg_epen_ignoreall = false;
+bool flg_epen_writing = false;
+bool flg_epen_hovering = false;
+struct wacom_i2c *plasma_wac_i2c = NULL;
 
 static struct timeval time_lastinrange;
 static bool flg_epen_sidehold_pending = false;
+static bool flg_epen_ignorebuttonuntilreleased = false;
 static bool flg_epen_zone_home = false;
 static void epen_sidehold_precheck_work(struct work_struct * work_epen_sidehold_precheck);
 static DECLARE_DELAYED_WORK(work_epen_sidehold_precheck, epen_sidehold_precheck_work);
@@ -548,6 +560,33 @@ static void wacom_i2c_disable(struct wacom_i2c *wac_i2c)
 	}
 }
 
+void plasma_epen_suspend(void)
+{
+	pr_info("[wacom/%s] powering off digitizer\n", __func__);
+	
+	if (plasma_wac_i2c == NULL)
+		return;
+	
+	plasma_wac_i2c->wacom_i2c_disable(plasma_wac_i2c);;
+}
+
+void plasma_epen_resume(void)
+{
+	pr_info("[wacom/%s] starting\n", __func__);
+	
+	if (plasma_wac_i2c == NULL)
+		return;
+	
+	if (!plasma_wac_i2c->pen_insert || !plasma_wac_i2c->battery_saving_mode) {
+		// pen isn't inserted, power on the digitizer.
+		
+		pr_info("[wacom/%s] pen was not inserted (%d), or battery mode isn't enabled (%d), powering on\n",
+				__func__, plasma_wac_i2c->pen_insert, plasma_wac_i2c->battery_saving_mode);
+		
+		plasma_wac_i2c->wacom_i2c_enable(plasma_wac_i2c);
+	}
+}
+
 #ifdef WACOM_USE_SOFTKEY
 static int keycode[] = {
 	KEY_RECENT, KEY_BACK,
@@ -557,7 +596,7 @@ void wacom_i2c_softkey(struct wacom_i2c *wac_i2c, s16 key, s16 pressed)
 {
 	if (flg_power_suspended || flg_pu_locktsp)
 		return;
-	
+
 	if (wac_i2c->pen_prox) {
 		dev_info(&wac_i2c->client->dev,
 				"%s: prox:%d, run release_hover\n",
@@ -649,6 +688,9 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 	u8 gain = 0;
 	s8 tilt_x = 0, tilt_y = 0;
 	int mintrailingpressure;
+	int tmp_sttg_epen_sidehold_precheck_timeout;
+	int inject_ary_len;
+	int i;
 
 #ifdef WACOM_USE_SOFTKEY
 	static s16 softkey, pressed, keycode;
@@ -697,7 +739,7 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 			}
 			
 			pr_info("[wacom] x: %d, y: %d. pressed: %d, keycode: %d\n", x, y, pressed, keycode);
-			
+
 #ifdef USE_WACOM_BLOCK_KEYEVENT
 			if (wac_i2c->touch_pressed) {
 				if (pressed) {
@@ -759,6 +801,8 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 		pressure = ((u16) data[5] << 8) + (u16) data[6];
 
 		gain = data[7];
+		tilt_x = (s8)data[9];
+		tilt_y = -(s8)data[8];
 
 		if (wac_i2c->wac_dt_data->x_invert)
 			x = wac_i2c->wac_query_data->x_max - x;
@@ -770,9 +814,15 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 			x = y;
 			y = tmp;
 		}
-		
-		if (sttg_epen_worryfree)
+
+		if (sttg_epen_worryfree) {
 			flg_epen_tsp_block = true;
+			
+			//if (!flg_epen_hovering)
+			//	tsp_releaseall();
+		}
+		
+		flg_epen_hovering = true;
 		
 		// if requested, block the home button while pen is in range.
 		if (sttg_epen_worryfree_home == 1)
@@ -787,12 +837,13 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 			cancel_delayed_work_sync(&work_epen_sidehold_precheck);
 			flg_epen_sidehold_pending = false;
 			flg_epen_zone_home = false;
+			flg_epen_ignorebuttonuntilreleased = false;
 		}
 		
 		if (prox) {
 			
-			//pr_info("[wacom] x: %d, y: %d, pressure: %d, gain: %d, prox: %d, stylus: %d, rubber: %d, rdy: %d\n",
-			//		x, y, pressure, gain, prox, stylus, rubber, rdy);
+			//pr_info("[wacom] x: %d, y: %d, pressure: %d, gain: %d, prox: %d, stylus: %d, rubber: %d, rdy: %d, tilt_x: %d, tilt_y: %d\n",
+			//		x, y, pressure, gain, prox, stylus, rubber, rdy, tilt_x, tilt_y);
 			
 			epen_x_cur = (x * 1440) / 7000;
 			epen_y_cur = (y * 2560) / 12500;
@@ -801,13 +852,32 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 				pr_info("[epen/%s] pen first down, resetting ctr\n", __func__);
 				ctr_epen_events = 0;
 				avg = 0;
+				epen_w_max = 0;
 				flg_epen_ignoreinput = false;
 				flg_epen_ignoreall = false;
 				epen_x_start = epen_x_cur;
 				epen_y_start = epen_y_cur;
+				epen_wacx_start = x;
+				epen_wacy_start = y;
+				
+				ctr_epen_saved_events = 0;
+				memset(ary_inject_epen_x, -1, sizeof(ary_inject_epen_x));
+				memset(ary_inject_epen_y, -1, sizeof(ary_inject_epen_y));
+				memset(ary_inject_epen_w, -1, sizeof(ary_inject_epen_w));
+				
+				flg_epen_writing = true;
+				
+				//do_gettimeofday(&time_writingstarted);
+				
+				//pr_info("[epen/%s] releasing fingers\n", __func__);
+				//tsp_releaseall();
 			}
 			
 			ctr_epen_events++;
+			
+			// record the most pressure.
+			if (pressure > epen_w_max)
+				epen_w_max = pressure;
 			
 			if (sttg_epen_mintrailingpressurepct) {
 				
@@ -818,7 +888,7 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 				else
 					mintrailingpressure = ((avg / 100) * sttg_epen_mintrailingpressurepct);
 				
-				pr_info("[epen/%s] ctr_epen_events: %d, pressure: %d, avg: %d\n", __func__, ctr_epen_events, pressure, avg);
+				//pr_info("[epen/%s] ctr_epen_events: %d, pressure: %d, avg: %d\n", __func__, ctr_epen_events, pressure, avg);
 				
 				if (flg_epen_ignoreinput
 					&& pressure > avg) {
@@ -849,117 +919,9 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 					flg_ctr_inputboost_epen = zz_sttg_inputboost_punch_cycles;
 			}*/
 			
-			if (!flg_power_suspended
-				&& (!prox
-					|| (!flg_epen_ignoreall
-						&& (!sttg_epen_dropfirstevents
-							|| (sttg_epen_dropfirstevents
-								&& ctr_epen_events > sttg_epen_dropfirstevents)
-							)
-						)
-					)
-				) {
-				
-				if (flg_epen_ignoreinput) {
-					input_report_abs(wac_i2c->input_dev, ABS_X, wac_i2c->last_x);
-					input_report_abs(wac_i2c->input_dev, ABS_Y, wac_i2c->last_y);
-				} else {
-					input_report_abs(wac_i2c->input_dev, ABS_X, x);
-					input_report_abs(wac_i2c->input_dev, ABS_Y, y);
-				}
-
-				// if fixedpressure is set, use that, if not, then see if the pressure
-				// is below minpressure, otherwise just use the normal value.
-				if (sttg_epen_fixedpressure)
-					input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, sttg_epen_fixedpressure);
-				else {
-					if (sttg_epen_fixedminpressure && pressure < sttg_epen_fixedminpressure)
-						input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, sttg_epen_fixedminpressure);
-					else
-						input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, pressure);
-				}
-
-	#ifdef USE_WACOM_TILT_HEIGH
-				input_report_abs(wac_i2c->input_dev,
-					ABS_DISTANCE, gain);
-
-				tilt_x = (s8)data[9];
-				tilt_y = -(s8)data[8];
-				input_report_abs(wac_i2c->input_dev,
-					ABS_TILT_X, tilt_x);
-				input_report_abs(wac_i2c->input_dev,
-					ABS_TILT_Y, tilt_y);
-	#endif
-
-				input_report_key(wac_i2c->input_dev, BTN_STYLUS, stylus);
-				
-				if ((sttg_epen_minpressure
-					&& pressure < sttg_epen_minpressure)
-					|| flg_epen_ignoreinput) {
-					// we are below the threshold, so always release the touch.
-					input_report_key(wac_i2c->input_dev, BTN_TOUCH, 0);
-					//prox = 0;  // don't use this so vibration will bypass minpressure
-				} else {
-					input_report_key(wac_i2c->input_dev, BTN_TOUCH, prox);
-					if (sttg_epen_vib_on_move && sttg_epen_vib_duration)
-						controlVibrator(sttg_epen_vib_duration, sttg_epen_vib_strength);
-				}
-
-				input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
-				input_sync(wac_i2c->input_dev);
-				
-				if (prox)
-					pr_info("[epen/%s] SYNC #%d\n", __func__, ctr_epen_events);
-				
-				if (flg_epen_ignoreinput)
-					flg_epen_ignoreall = true;
-				
-			}
-			wac_i2c->last_x = x;
-			wac_i2c->last_y = y;
-
-			if (prox && !wac_i2c->pen_pressed) {
-#ifdef USE_WACOM_BLOCK_KEYEVENT
-				wac_i2c->touch_pressed = true;
-#endif
-				if (sttg_epen_vib_duration)
-					controlVibrator(sttg_epen_vib_duration, sttg_epen_vib_strength);
-
-#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-				dev_info(&wac_i2c->client->dev,
-						"%s: pressed. x:%d, y:%d, tx:%d, ty:%d, h:%d, p:%d, data[0]:%X\n",
-						__func__, x, y, tilt_x, tilt_y, gain, pressure, data[0]);
-#else
-				dev_info(&wac_i2c->client->dev,
-						"%s: pressed\n",
-						__func__);
-#endif
-			} else if (!prox && wac_i2c->pen_pressed) {
-				
-				ctr_epen_events = 0;
-				epen_x_cur = 0;
-				epen_y_cur = 0;
-				epen_x_start = -1;
-				epen_y_start = -1;
-				
-#ifdef USE_WACOM_BLOCK_KEYEVENT
-				schedule_delayed_work(&wac_i2c->touch_pressed_work,
-					msecs_to_jiffies(wac_i2c->key_delay_time));
-#endif
-				if (sttg_epen_vib_on_exit && sttg_epen_vib_duration)
-					controlVibrator(sttg_epen_vib_duration, sttg_epen_vib_strength);
-				
-				dev_info(&wac_i2c->client->dev,
-						"%s: released\n",
-						__func__);
-			}
-
-			wac_i2c->pen_pressed = prox;
-
 			if (stylus && !wac_i2c->side_pressed) {
-				dev_info(&wac_i2c->client->dev,
-						"%s: side on\n",
-						__func__);
+				// side just got pressed.
+				
 				if (/*do_timesince(time_lastinrange) > 250*/!prox) {
 					
 					if (x > 2700 && x < 4500
@@ -970,18 +932,34 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 						flg_epen_zone_home = true;
 						flg_epen_sidehold_pending = true;
 						
+						// the button has to be kept hidden until it is released, otherwise the sidecheck work will clear it
+						// while it is still being held, potentially causing a userspace app to be triggered once the flg is cleared
+						// and the os starts seeing input from it again.
+						flg_epen_ignorebuttonuntilreleased = true;
+						
+						// if there is no sidehold, do the work immediately.
+						if (sttg_epen_sidehold_key_code)
+							tmp_sttg_epen_sidehold_precheck_timeout = sttg_epen_sidehold_precheck_timeout;
+						else
+							tmp_sttg_epen_sidehold_precheck_timeout = 0;
+						
 						pr_info("[epen/%s] checking for sidehold in %d ms\n", __func__,
-								sttg_epen_sidehold_precheck_timeout);
+								tmp_sttg_epen_sidehold_precheck_timeout);
 						
 						// schedule work to see if the sidepress will still be held down.
-						schedule_delayed_work_on(0, &work_epen_sidehold_precheck, msecs_to_jiffies(sttg_epen_sidehold_precheck_timeout));
+						schedule_delayed_work_on(0, &work_epen_sidehold_precheck, msecs_to_jiffies(tmp_sttg_epen_sidehold_precheck_timeout));
 						
 					} else {
 						// any sidepress in the home area supersedes normal sidepresses/sideholds,
 						// so this is mutually exclusive.
-					
+						
 						if (sttg_epen_side_key_code && !sttg_epen_sidehold_key_code) {
 							// do side payload if sidehold isn't enabled.
+							
+							// the button has to be kept hidden until it is released, otherwise the sidecheck work will clear it
+							// while it is still being held, potentially causing a userspace app to be triggered once the flg is cleared
+							// and the os starts seeing input from it again.
+							flg_epen_ignorebuttonuntilreleased = true;
 							
 							pr_info("[epen/%s] SIDEPRESS - keycode: %d\n", __func__,
 									sttg_epen_side_key_code);
@@ -1000,6 +978,11 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 							flg_epen_zone_home = false;
 							flg_epen_sidehold_pending = true;
 							
+							// the button has to be kept hidden until it is released, otherwise the sidecheck work will clear it
+							// while it is still being held, potentially causing a userspace app to be triggered once the flg is cleared
+							// and the os starts seeing input from it again.
+							flg_epen_ignorebuttonuntilreleased = true;
+							
 							pr_info("[epen/%s] checking for sidehold in %d ms\n", __func__,
 									sttg_epen_sidehold_precheck_timeout);
 							
@@ -1009,10 +992,234 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 					}
 				}
 			}
+			
+			// writing has stopped. let's check to see if it's possible that
+			// we filtered out the first few events that were desired.
+			// dropfirstevents is designed to drop the first few events
+			// but only if the writing was sustained, otherwise we must assume
+			// it was intentional - like a dotted i, etc.
+			if (sttg_epen_dropfirstevents
+				&& ctr_epen_events <= (sttg_epen_dropfirstevents + 3)
+				&& !prox && wac_i2c->pen_pressed) {
+				
+				// it looks like this event was filtered out by mistake,
+				// let's go back in time and inject one event which of the
+				// largest width we saw.
+				
+				if (ary_inject_epen_x[0] > 0) {
+					
+					inject_ary_len = (sizeof(ary_inject_epen_x) / sizeof(ary_inject_epen_x[0]));
+					
+					for (i = 0; i < inject_ary_len; i++) {
+						
+						if (ary_inject_epen_x[i] > 0) {
+							input_report_abs(wac_i2c->input_dev, ABS_X, ary_inject_epen_x[i]);
+							input_report_abs(wac_i2c->input_dev, ABS_Y, ary_inject_epen_y[i]);
+							input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, max(ary_inject_epen_w[i], (int) sttg_epen_fixedminpressure));
+							input_report_key(wac_i2c->input_dev, BTN_TOUCH, 1);
+							input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
+							input_sync(wac_i2c->input_dev);
+							
+							pr_info("[epen/%s] INJECTED - e: %d, x: %d, y: %d, x_start: %d, y_start: %d, w_max: %d, pressure: %d, ctr_events: %d\n", __func__,
+									i, ary_inject_epen_x[i], ary_inject_epen_y[i], epen_wacx_start, epen_wacy_start, epen_w_max, pressure, ctr_epen_events);
+							
+						} else {
+							break;
+						}
+					}
+					
+					// reset, because we only want to inject once.
+					memset(ary_inject_epen_x, -1, sizeof(ary_inject_epen_x));
+					memset(ary_inject_epen_y, -1, sizeof(ary_inject_epen_y));
+					memset(ary_inject_epen_w, -1, sizeof(ary_inject_epen_w));
+					ctr_epen_saved_events = 0;
+				}
+				
+				// old stuff.
+				/*//msleep(10);
+				
+				// make the dot.
+				input_report_abs(wac_i2c->input_dev, ABS_X, epen_wacx_start);
+				input_report_abs(wac_i2c->input_dev, ABS_Y, epen_wacy_start);
+				input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, max(epen_w_max, (int) sttg_epen_fixedminpressure));
+				input_report_key(wac_i2c->input_dev, BTN_TOUCH, 1);
+				input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
+				input_sync(wac_i2c->input_dev);
+				
+				input_report_abs(wac_i2c->input_dev, ABS_X, epen_wacx_start + 5);
+				input_report_abs(wac_i2c->input_dev, ABS_Y, epen_wacy_start + 5);
+				input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, max(epen_w_max, (int) sttg_epen_fixedminpressure));
+				input_report_key(wac_i2c->input_dev, BTN_TOUCH, 1);
+				input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
+				input_sync(wac_i2c->input_dev);
+				
+				input_report_abs(wac_i2c->input_dev, ABS_X, epen_wacx_start);
+				input_report_abs(wac_i2c->input_dev, ABS_Y, epen_wacy_start);
+				input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, max(epen_w_max, (int) sttg_epen_fixedminpressure));
+				input_report_key(wac_i2c->input_dev, BTN_TOUCH, 1);
+				input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
+				input_sync(wac_i2c->input_dev);
+				
+				//msleep(10);*/
+				
+				// release the dot.
+				/*input_report_abs(wac_i2c->input_dev, ABS_X, epen_wacx_start);
+				input_report_abs(wac_i2c->input_dev, ABS_Y, epen_wacy_start);
+				input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, epen_w_max);
+				input_report_key(wac_i2c->input_dev, BTN_TOUCH, 0);
+				input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
+				input_sync(wac_i2c->input_dev);*/
+				
+				/*pr_info("[epen/%s] injected x: %d, y: %d, x_start: %d, y_start: %d, w_max: %d, pressure: %d, ctr_events: %d\n", __func__,
+						x, y, epen_wacx_start, epen_wacy_start, epen_w_max, pressure, ctr_epen_events);*/
+			}
+			
+			if (!flg_power_suspended) {
+				
+				if (!prox
+					|| (!flg_epen_ignoreall
+						&& (!sttg_epen_dropfirstevents
+							|| (sttg_epen_dropfirstevents
+								&& ctr_epen_events > sttg_epen_dropfirstevents)
+							)
+						)
+					) {
+					
+					if (flg_epen_ignoreinput) {
+						input_report_abs(wac_i2c->input_dev, ABS_X, wac_i2c->last_x);
+						input_report_abs(wac_i2c->input_dev, ABS_Y, wac_i2c->last_y);
+					} else {
+						input_report_abs(wac_i2c->input_dev, ABS_X, x);
+						input_report_abs(wac_i2c->input_dev, ABS_Y, y);
+					}
+
+					// if fixedpressure is set, use that, if not, then see if the pressure
+					// is below minpressure, otherwise just use the normal value.
+					if (sttg_epen_fixedpressure)
+						input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, sttg_epen_fixedpressure);
+					else {
+						if (sttg_epen_fixedminpressure && pressure < sttg_epen_fixedminpressure)
+							input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, sttg_epen_fixedminpressure);
+						else
+							input_report_abs(wac_i2c->input_dev, ABS_PRESSURE, pressure);
+					}
+
+		#ifdef USE_WACOM_TILT_HEIGH
+					input_report_abs(wac_i2c->input_dev,
+						ABS_DISTANCE, gain);
+					input_report_abs(wac_i2c->input_dev,
+						ABS_TILT_X, tilt_x);
+					input_report_abs(wac_i2c->input_dev,
+						ABS_TILT_Y, tilt_y);
+		#endif
+
+					if (!flg_epen_ignorebuttonuntilreleased)
+						input_report_key(wac_i2c->input_dev, BTN_STYLUS, stylus);
+					
+					if ((sttg_epen_minpressure
+						&& pressure < sttg_epen_minpressure)
+						|| flg_epen_ignoreinput) {
+						// we are below the threshold, so always release the touch.
+						input_report_key(wac_i2c->input_dev, BTN_TOUCH, 0);
+						//prox = 0;  // don't use this so vibration will bypass minpressure
+					} else {
+						input_report_key(wac_i2c->input_dev, BTN_TOUCH, prox);
+						if (sttg_epen_vib_on_move && sttg_epen_vib_duration)
+							controlVibrator(sttg_epen_vib_duration, sttg_epen_vib_strength);
+					}
+
+					input_report_key(wac_i2c->input_dev, wac_i2c->tool, 1);
+					input_sync(wac_i2c->input_dev);
+					
+					//if (prox)
+					//	pr_info("[epen/%s] SYNC #%d\n", __func__, ctr_epen_events);
+					
+					if (flg_epen_ignoreinput)
+						flg_epen_ignoreall = true;
+					
+				} else if (prox
+						   && !flg_epen_ignoreall
+						   && sttg_epen_dropfirstevents
+						   && ctr_epen_events <= sttg_epen_dropfirstevents) {
+					
+					pr_info("[epen/%s] SAVING IGNORED EVENT - x: %d, y: %d, pressure: %d, ctr_saved_events: %d\n", __func__,
+							x, y, pressure, ctr_epen_saved_events);
+					
+					if (!flg_pu_locktsp
+						&& ctr_epen_saved_events < 200) {
+						
+						ary_inject_epen_x[ctr_epen_saved_events] = x;
+						ary_inject_epen_y[ctr_epen_saved_events] = y;
+						ary_inject_epen_w[ctr_epen_saved_events] = pressure;
+					}
+					
+					ctr_epen_saved_events++;
+				}
+				
+			}
+			
+			wac_i2c->last_x = x;
+			wac_i2c->last_y = y;
+
+			if (prox && !wac_i2c->pen_pressed) {
+#ifdef USE_WACOM_BLOCK_KEYEVENT
+				wac_i2c->touch_pressed = true;
+#endif
+			if (sttg_epen_vib_duration)
+					controlVibrator(sttg_epen_vib_duration, sttg_epen_vib_strength);
+
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
+				dev_info(&wac_i2c->client->dev,
+						"%s: pressed. x:%d, y:%d, tx:%d, ty:%d, h:%d, p:%d, data[0]:%X\n",
+						__func__, x, y, tilt_x, tilt_y, gain, pressure, data[0]);
+#else
+				dev_info(&wac_i2c->client->dev,
+						"%s: pressed\n",
+						__func__);
+#endif
+			} else if (!prox && wac_i2c->pen_pressed) {
+				
+				pr_info("[epen/%s] writing stopped, ctr_events: %d, w_max: %d\n", __func__, ctr_epen_events, epen_w_max);
+				
+				ctr_epen_events = 0;
+				epen_x_cur = 0;
+				epen_y_cur = 0;
+				epen_x_start = -1;
+				epen_y_start = -1;
+				epen_wacx_start = -1;
+				epen_wacy_start = -1;
+				epen_w_max = 0;
+				flg_epen_writing = false;
+				
+#ifdef USE_WACOM_BLOCK_KEYEVENT
+				schedule_delayed_work(&wac_i2c->touch_pressed_work,
+					msecs_to_jiffies(wac_i2c->key_delay_time));
+#endif
+				if (sttg_epen_vib_on_exit && sttg_epen_vib_duration)
+					controlVibrator(sttg_epen_vib_duration, sttg_epen_vib_strength);
+
+				dev_info(&wac_i2c->client->dev,
+						"%s: released\n",
+						__func__);
+			}
+
+			wac_i2c->pen_pressed = prox;
+
+			if (stylus && !wac_i2c->side_pressed) {
+				dev_info(&wac_i2c->client->dev,
+						"%s: side on\n",
+						__func__);
+				// note: moved sidepress detection stuff from here to above, so it could have the power
+				// to block input events to prevent userspace apps from seeing things we have already
+				// acted on.
+			}
 			else if (!stylus && wac_i2c->side_pressed) {
 				dev_info(&wac_i2c->client->dev,
 						"%s: side off\n",
 						__func__);
+				
+				// always turn off the ignore when we release.
+				flg_epen_ignorebuttonuntilreleased = false;
 				
 				if (sttg_epen_sidehold_key_code) {
 					
@@ -1074,6 +1281,9 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 				flg_epen_zone_home = false;
 			}
 			
+			// the pen has left, so make sure the button hold ignore is released.
+			flg_epen_ignorebuttonuntilreleased = false;
+			
 			// the pen has left, so make sure the home block is released.
 			if (sttg_epen_worryfree_tk == 1)
 				flg_epen_home_block = false;
@@ -1088,6 +1298,8 @@ int wacom_i2c_coord(struct wacom_i2c *wac_i2c)
 			// temporarily disable worryfree.
 			if (wac_i2c->side_pressed)
 				flg_epen_tsp_block = false;
+			
+			flg_epen_hovering = false;
 		}
 		wac_i2c->pen_prox = 0;
 		wac_i2c->pen_pressed = 0;
@@ -1170,13 +1382,13 @@ static void pen_insert_work(struct work_struct *work)
 	if (wac_i2c->init_fail)
 		return;
 	wac_i2c->pen_insert = !gpio_get_value(wac_i2c->gpio_pen_insert);
-	
-	// boost on remove. mode/max/mid/allcores/input/gpumax/gpumid/user
+
+	// boost on remove.
 	if (!wac_i2c->pen_insert) {
 		// pen removed.
 		
 		// mode/max/mid/allcores/input/gpumax/gpumid/user
-		zzmoove_boost(0, 10, 0, 10, 50, 50, 0, 50);
+		zzmoove_boost(0, 30, 0, 30, 50, 50, 0, 50);
 		
 		if (sttg_epen_worryfree)
 			flg_epen_tsp_block = true;
@@ -1189,7 +1401,7 @@ static void pen_insert_work(struct work_struct *work)
 		
 		if (sttg_epen_out_vibrate)
 			controlVibrator(125, 125);
-
+		
 		if (flg_power_suspended) {
 			// screen is off.
 			
@@ -1242,6 +1454,8 @@ static void pen_insert_work(struct work_struct *work)
 		flg_epen_tsp_block = false;
 		flg_epen_tk_block = false;
 		flg_epen_home_block = false;
+		flg_epen_hovering = false;
+		flg_epen_writing = false;
 		
 		if (sttg_epen_in_key_code) {
 			
@@ -1969,6 +2183,8 @@ static int wacom_i2c_probe(struct i2c_client *client,
 	mutex_init(&wac_i2c->irq_lock);
 
 	INIT_DELAYED_WORK(&wac_i2c->resume_work, wacom_i2c_resume_work);
+	
+	plasma_wac_i2c = wac_i2c;
 
 #ifdef USE_WACOM_BLOCK_KEYEVENT
 	INIT_DELAYED_WORK(&wac_i2c->touch_pressed_work, wacom_i2c_touch_pressed_work);
