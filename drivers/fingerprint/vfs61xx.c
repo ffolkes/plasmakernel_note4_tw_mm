@@ -33,6 +33,7 @@ extern void zzmoove_boost(int screen_state,
 						  int userspace_cycles);
 
 struct vfsspi_devData *vfsSpiDev_copy = NULL;
+struct vfsspi_devData *plasma_dev_vfsspi;
 
 /* Pass to VFSSPI_IOCTL_GET_FREQ_TABLE command */
 /**
@@ -188,6 +189,9 @@ int vfsspi_disable_irq(struct vfsspi_devData *vfsSpiDev)
 {
 	if (vfsSpiDev->drdy_irq_flag == DRDY_IRQ_DISABLE)
 		return -EINVAL;
+	
+	pr_info("[fingerprint/vfsspi_disable_irq] boosting for finger touch!\n");
+	zzmoove_boost(2, 0, 10, 0, 0, 0, 0, 0);
 
 	spin_lock(&vfsSpiDev->irq_lock);
 	disable_irq_nosync(gpio_irq);
@@ -1051,7 +1055,7 @@ long vfsspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	case VFSSPI_IOCTL_POWER_OFF:
 		pr_info("[fingerprint/vfsspi_ioctl] boosting for unlock!\n");
-		zzmoove_boost(1, 5, 20, 5, 100, 5, 20, 0);
+		zzmoove_boost(0, 5, 20, 5, 100, 5, 20, 0);
 		pr_info("%s VFSSPI_IOCTL_POWER_OFF\n", __func__);
 		if (vfsSpiDev->ldocontrol && vfsSpiDev->ldo_onoff) {
 			vfsspi_regulator_onoff(vfsSpiDev, false);
@@ -1296,6 +1300,8 @@ int vfsspi_platformInit(struct vfsspi_devData *vfsSpiDev)
 			goto done;
 		} else
 			vfsSpiDev->drdy_irq_flag = DRDY_IRQ_ENABLE;
+		
+		plasma_dev_vfsspi = vfsSpiDev;
 
 #ifdef ENABLE_SENSORS_FPRINT_SECURE
 #ifdef FEATURE_SPI_WAKELOCK
@@ -1821,6 +1827,12 @@ int vfsspi_remove(struct spi_device *spi)
 	return status;
 }
 
+void plasma_vfs_unwakelock(void)
+{
+	pr_info("[vfs/%s] starting\n", __func__);
+	
+	wake_unlock(&plasma_dev_vfsspi->fp_spi_lock);
+}
 
 static void vfsspi_shutdown(struct spi_device *spi)
 {
