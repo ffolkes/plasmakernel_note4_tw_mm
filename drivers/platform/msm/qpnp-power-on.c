@@ -30,10 +30,15 @@
 extern int do_timesince(struct timeval time_start);
 extern unsigned int pu_recording_end(void);
 extern int plasma_process_gpio_button_state(int keycode, int state);
+extern void plasma_softsuspend(bool mode);
+extern bool flg_power_softsuspended;
+extern bool flg_power_suspendonresume;
+extern int flg_ctr_devfreq_min;
 extern void zzmoove_boost(int screen_state,
 						  int max_cycles, int mid_cycles, int allcores_cycles,
 						  int input_cycles, int devfreq_max_cycles, int devfreq_mid_cycles,
 						  int userspace_cycles);
+//extern void vk_press_button(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern void vk_press_button_safe(int keycode, bool delayed, bool force, bool elastic, bool powerfirst);
 extern bool flg_power_suspended;
 extern bool sttg_pu_tamperevident;
@@ -42,6 +47,7 @@ extern bool sttg_tsp_blockpower;
 extern bool sttg_s2w_mode;
 extern bool sttg_a2w_mode;
 extern bool sttg_p2w_mode;
+extern bool sttg_bo_mode;
 extern unsigned int sttg_pu_blockpower;
 extern unsigned int sttg_pf_fo_steps;
 extern unsigned int sttg_pf_fo_stepdelay;
@@ -49,6 +55,8 @@ extern unsigned int sttg_pf_fo_midpoint;
 extern unsigned int sttg_pf_fo_midpoint_stepdelay;
 extern unsigned int sttg_mb_dp_power_screenoff_key_code;
 extern unsigned int sttg_mb_dp_power_screenoff_key_delay;
+extern unsigned int sttg_mb_elp_power_key_code;
+extern unsigned int sttg_mb_elp_power_screenoff_key_code;
 extern bool pu_valid(void);
 extern void pu_setFrontLED(unsigned int mode);
 extern bool flg_pu_tamperevident;
@@ -63,6 +71,7 @@ extern bool flg_pf_fo_fadedbypower;
 extern bool flg_epen_tsp_block;
 extern bool flg_epen_tk_block;
 extern bool flg_epen_home_block;
+extern int touch_x_start;
 
 struct timeval time_pressed_power;
 struct timeval time_pressed_powerbypass;
@@ -72,6 +81,12 @@ static bool flg_allow_next = false;
 static bool flg_power_down_while_suspended = false;
 static int ctr_powerpress = 0;
 struct input_dev *plasma_input_dev_qpnp;
+static bool elp_saved_screen_state = true;
+static bool flg_elp_needs_down_first = false;
+static int qpnp_old_state = -1;
+
+static void check_power_elp_work(struct work_struct * work_check_power_elp);
+DECLARE_DELAYED_WORK(work_check_power_elp, check_power_elp_work);
 
 static void releasepower_work(struct work_struct * work_releasepower);
 static DECLARE_DELAYED_WORK(work_releasepower, releasepower_work);
@@ -231,6 +246,44 @@ static const char * const qpnp_poff_reason[] = {
 	[14] = "Triggered from OTST3 (Overtemp)",
 	[15] = "Triggered from STAGE3 (Stage 3 reset)",
 };
+
+static void check_power_elp_work(struct work_struct * work_check_power_elp)
+{
+	unsigned int tmp_keycode;
+	
+	pr_info("[qpnp-power-on/check_power_elp_work] starting\n");
+	
+	if (flg_elp_needs_down_first) {
+		// we need to press down first.
+		
+		pr_info("[qpnp-power-on/check_power_elp_work] pressing down first\n");
+		
+		input_report_key(plasma_input_dev_qpnp, 116, 1);
+		input_sync(plasma_input_dev_qpnp);
+		qpnp_old_state = 1;
+		
+		msleep(50);
+	}
+	
+	// release power button.
+	input_report_key(plasma_input_dev_qpnp, 116, 0);
+	input_sync(plasma_input_dev_qpnp);
+	
+	if (elp_saved_screen_state) {
+		
+		// press back button.
+		vk_press_button_safe(-158, false, false, false, false);
+		
+		// wait for the power dialog to go away.
+		msleep(250);
+		
+		tmp_keycode = sttg_mb_elp_power_key_code;
+	} else
+		tmp_keycode = sttg_mb_elp_power_screenoff_key_code;
+	
+	// press camera button.
+	vk_press_button_safe(tmp_keycode, false, false, false, false);
+}
 
 static void releasepower_work(struct work_struct * work_releasepower)
 {
@@ -522,14 +575,17 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	int pf_fo_midsteps = 0;
 	int pf_fo_totalmiddelay = 0;
 	int tmp_kcal_commit_wait = 0;
+	bool flg_elp_only = false;
 
 	cfg = qpnp_get_cfg(pon, pon_type);
 	if (!cfg)
 		return -EINVAL;
 
 	/* Check if key reporting is supported */
-	if (!cfg->key_code)
+	if (!cfg->key_code) {
+		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] bad keycode\n");
 		return 0;
+	}
 
 	/* check the RT status to get the current status of the line */
 	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
@@ -560,8 +616,15 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 					cfg->key_code, pon_rt_sts);
 	key_status = pon_rt_sts & pon_rt_bit;
 	
+	// set this with the cached value.
+	if (qpnp_old_state >= 0)
+		cfg->old_state = qpnp_old_state;
+	
+	// always reset this.
+	qpnp_old_state = -1;
+
 	if (!plasma_process_gpio_button_state(cfg->key_code, key_status)) {
-		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] BLOCKED - keycode: %d, state: %d\n", cfg->key_code, key_status);
+		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] BLOCKED - keycode: %d, state: %d, old_state: %d\n", cfg->key_code, key_status, cfg->old_state);
 		cfg->old_state = key_status;  // keep this up-to-date.
 		flg_skip_next = false;  // reset this, just in case it was active.
 		return 0;
@@ -571,12 +634,21 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	if (flg_skip_next) {
 		// avoid sending the key-up event.
 		flg_skip_next = false;
+		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] SKIPPING - keycode: %d, state: %d, old_state: %d\n", cfg->key_code, key_status, cfg->old_state);
 		return 0;
 	}
 	
+	if (flg_power_suspended) {
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] touch_x_start reset to -1\n");
+		touch_x_start = -1;
+	}
+	
+	flg_ctr_devfreq_min = false;
+	
 	// do we need to block this power press?
-	if ((((pu_valid() && (sttg_pu_blockpower == 1 || sttg_pu_blockpower == 3)))  // for pu power lockout
-			|| (sttg_tsp_blockpower && (sttg_s2w_mode || sttg_a2w_mode || sttg_p2w_mode)))  // for generic power lockout (s2w, a2w, etc)
+	if (cfg->key_code == 116
+		&& (((pu_valid() && (sttg_pu_blockpower == 1 || sttg_pu_blockpower == 3)))  // for pu power lockout
+			|| (sttg_tsp_blockpower && (sttg_s2w_mode || sttg_a2w_mode || sttg_p2w_mode || sttg_bo_mode)))  // for generic power lockout (s2w, a2w, etc)
 		&& flg_power_suspended
 		&& !flg_allow_next
 		&& ctr_power_suspends > 1) {  // allow the first power press to deal with tsp weirdness
@@ -604,6 +676,13 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		// update time.
 		do_gettimeofday(&time_pressed_powerbypass);
 		
+		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] SKIPPING - keycode: %d, state: %d, old_state: %d\n", cfg->key_code, key_status, cfg->old_state);
+		
+		if (sttg_mb_elp_power_screenoff_key_code) {
+			flg_elp_only = true;
+			goto elp_section;
+		}
+		
 		return 0;
 passthrough:
 		;
@@ -614,6 +693,7 @@ passthrough:
 	if (pu_recording_end() && (cfg->key_code == 116 || cfg->key_code == 114)) {
 		// pu was recording, drop this press and the next 0.
 		flg_skip_next = true;
+		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] SKIPPING - keycode: %d, state: %d, old_state: %d\n", cfg->key_code, key_status, cfg->old_state);
 		return 0;
 	}
 
@@ -621,14 +701,18 @@ passthrough:
 	 * without a press event
 	 */
 	if (!cfg->old_state && !key_status) {
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] missing key down, forcing one now\n");
 		input_report_key(pon->pon_input, cfg->key_code, 1);
 		input_sync(pon->pon_input);
 	}
-	
+
 	pr_info("[qpnp-power-on] qpnp_pon_input_dispatch. code: %d status: %d\n", cfg->key_code, key_status);
-	timesince_pressed_power = do_timesince(time_pressed_power);
 	
-	if (key_status
+	if (cfg->key_code == 116)
+		timesince_pressed_power = do_timesince(time_pressed_power);
+	
+	if (cfg->key_code == 116
+		&& key_status
 		&& do_timesince(time_pressed_poweron) < 450
 		&& do_timesince(time_pressed_poweron) > 0
 		&& sttg_mb_dp_power_screenoff_key_code) {
@@ -638,11 +722,12 @@ passthrough:
 		
 		// drop this press, drop the up too.
 		flg_skip_next = true;
+		printk(KERN_DEBUG"[qpnp-power-on/qpnp_pon_input_dispatch] SKIPPING - keycode: %d, state: %d, old_state: %d\n", cfg->key_code, key_status, cfg->old_state);
 		return 0;
 		
 	} else
-		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch/mb_dp_power] power double press not detected, key_status: %d, timesince: %d\n",
-				key_status, do_timesince(time_pressed_poweron));
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch/mb_dp_power] power double press not detected, key: %d, key_status: %d, timesince: %d\n",
+				cfg->key_code, key_status, do_timesince(time_pressed_poweron));
 
 	if (!flg_power_suspended
 		&& cfg->key_code == 116
@@ -680,7 +765,7 @@ passthrough:
 		flg_tsp_lockedout = true;
 		flg_pf_fo_fadedbypower = true;
 		kcal_fadeOut();
-		cancel_delayed_work_sync(&work_releasepower);
+		cancel_delayed_work(&work_releasepower);
 		
 		// we need to make sure we don't end up triggering a long-press.
 		// so try to estimate how long the fade will be, also it takes about
@@ -694,23 +779,77 @@ passthrough:
 		else
 			flg_power_down_while_suspended = false;
 		
-		input_report_key(pon->pon_input, cfg->key_code, key_status);
-		input_sync(pon->pon_input);
-		pr_info("[KEY] code(0x%02X), value(%d)\n", cfg->key_code, key_status);
+		if (key_status && flg_power_softsuspended) {
+			pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] flg_power_softsuspended true, closing app and resuming inputs\n");
+			flg_power_softsuspended = false;
+			cfg->old_state = 1;
+			//plasma_softsuspend(false);
+			// don't send anything to the os.
+			vk_press_button_safe(1999, false, false, false, false);
+		} else {
+			flg_power_suspendonresume = false;
+			input_report_key(pon->pon_input, cfg->key_code, key_status);
+			input_sync(pon->pon_input);
+			pr_info("[KEY] code(0x%02X), key: %d, value(%d)\n", cfg->key_code, cfg->key_code, key_status);
+		}
 	}
 	
+elp_section:
+
 	// boost as fast as possible for power key, but let voldown be handled by inputbooster.
 	// also boost if release event occurred without a press.
-	if (cfg->key_code == 116 && (key_status || (!cfg->old_state && !key_status))) {
-		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] boosting for powerkey!\n");
-		zzmoove_boost(2, 20, 20, 20, 80, 50, 0, 0);
+	if (cfg->key_code == 116) {
 		
-		// save when power was last pressed, for touchwake.
-		do_gettimeofday(&time_pressed_power);
+		// power extra-long-press (elp).
+		if (key_status
+			&& plasma_gpio_check_only_button_down(116)  // make sure only power is down
+			&& do_timesince(time_pressed_power) > 500  // safeguard to prevent interfering with dp
+			&& (
+				(!flg_power_suspended && sttg_mb_elp_power_key_code)
+				|| (flg_power_suspended && sttg_mb_elp_power_screenoff_key_code)
+				)
+			) {
+			// power button is down, schedule work to see if it's still down in 1250ms.
+			pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] scheduling work to check for power elp in 800ms or more\n");
+			
+			if (flg_elp_only && flg_power_suspended)
+				flg_elp_needs_down_first = true;
+			else
+				flg_elp_needs_down_first = false;
+			
+			// save the screen state so the scheduled work will know which payload to deliver.
+			elp_saved_screen_state = !flg_power_suspended;
+			
+			// schedule work.
+			schedule_delayed_work_on(0, &work_check_power_elp, msecs_to_jiffies(800 + (400 * elp_saved_screen_state)));
+			
+		} else {
+			pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] cancelling check for power elp\n");
+			
+			// if we get a key-up event, then the elp check is no longer needed, so abort it.
+			cancel_delayed_work(&work_check_power_elp);
+		}
 		
-		if (flg_power_suspended)
-			time_pressed_poweron = time_pressed_power;
+		pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] key_status: %d, cfg->old_state: %d\n", key_status, cfg->old_state);
+		
+		if (key_status || (!cfg->old_state && !key_status)) {
+			pr_info("[qpnp-power-on/qpnp_pon_input_dispatch] boosting for powerkey!\n");
+			
+			if (flg_power_suspended)
+				zzmoove_boost(2, 40, 0, 40, 80, 50, 0, 0);
+			else
+				zzmoove_boost(0, 10, 0, 0, 0, 20, 0, 0);
+			
+			// save when power was last pressed, for touchwake.
+			do_gettimeofday(&time_pressed_power);
+			
+			if (flg_power_suspended)
+				time_pressed_poweron = time_pressed_power;
+		}
 	}
+	
+	if (flg_elp_only)
+		return 0;
 	
 	if (key_status && flg_pu_locktsp && pu_valid()) {
 		
@@ -1125,7 +1264,7 @@ qpnp_set_resin_wk_int(int en)
 		pr_err("Invalid config pointer\n");
 		return -EFAULT;
 	}
-	
+
 	// always wake from voldown.
 	en = 1;
 
@@ -1520,7 +1659,7 @@ static int qpnp_pon_config_init(struct qpnp_pon *pon)
 			goto free_input_dev;
 		}
 	}
-	
+
 	plasma_input_dev_qpnp = pon->pon_input;
 
 	for (i = 0; i < pon->num_pon_config; i++) {
@@ -1690,7 +1829,7 @@ static int qpnp_wake_enabled(const char *val, const struct kernel_param *kp)
 		pr_err("Invalid config pointer\n");
 		return -EFAULT;
 	}
-	
+
 	pr_info("[qpnp-power-on/qpnp_wake_enabled] code: %d, wake_enabled: %d\n", cfg->key_code, wake_enabled);
 
 	if (!wake_enabled)
