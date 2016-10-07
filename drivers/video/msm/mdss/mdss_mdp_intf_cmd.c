@@ -27,9 +27,9 @@
 #define MAX_SESSIONS 2
 
 /* wait for at most 2 vsync for lowest refresh rate (24hz) */
-#define KOFF_TIMEOUT msecs_to_jiffies(200)
+#define KOFF_TIMEOUT msecs_to_jiffies(10000)
 
-#define STOP_TIMEOUT 1000
+#define STOP_TIMEOUT 3000
 #define POWER_COLLAPSE_TIME msecs_to_jiffies(100)
 
 static DEFINE_MUTEX(cmd_clk_mtx);
