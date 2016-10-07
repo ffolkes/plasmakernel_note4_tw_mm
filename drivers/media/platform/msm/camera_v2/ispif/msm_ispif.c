@@ -1183,7 +1183,8 @@ static void msm_ispif_release(struct ispif_device *ispif)
 	iounmap(ispif->clk_mux_base);
 
 	ispif->ispif_state = ISPIF_POWER_DOWN;
-	pr_info("%s: power down done \n", __func__);
+	pr_info("%s: power down done, csid_version: %d, hw_num_isps: %d\n",
+			__func__, ispif->csid_version, ispif->hw_num_isps);
 }
 
 static long msm_ispif_cmd(struct v4l2_subdev *sd, void *arg)

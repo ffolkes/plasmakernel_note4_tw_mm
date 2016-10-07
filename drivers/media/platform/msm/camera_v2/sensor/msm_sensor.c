@@ -27,6 +27,11 @@
 #define CDBG(fmt, args...) do { } while (0)
 #endif
 
+extern bool sttg_camera_alwayson;
+extern bool flg_plasma_fled_lock;
+extern void alternateFrontLED(unsigned int duty1, unsigned int r1, unsigned int g1, unsigned int b1,
+							  unsigned int duty2, unsigned int r2, unsigned int g2, unsigned int b2);
+
 int led_torch_en;
 int led_flash_en;
 
@@ -401,6 +406,18 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_power_ctrl_t *power_info;
 	enum msm_camera_device_type_t sensor_device_type;
 	struct msm_camera_i2c_client *sensor_i2c_client;
+	
+	//if (strstr(s_ctrl->sensordata->sensor_name, "s5k6d1yx")) {
+		
+		flg_plasma_fled_lock = false;
+		
+		pr_info("[msm_camera/%s] turning led off, s: %s\n",
+				__func__, s_ctrl->sensordata->sensor_name);
+		
+		// turn led off first.
+		alternateFrontLED(0, 0, 0, 0,
+						  0, 0, 0, 0);
+	//}
 
 	if (!s_ctrl) {
 		pr_err("%s:%d failed: s_ctrl %p\n",
@@ -429,6 +446,7 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	rc = msm_camera_power_down(power_info, sensor_device_type,
 		sensor_i2c_client, s_ctrl->cci_i2c_master);
 	s_ctrl->sensor_state = MSM_SENSOR_POWER_DOWN;
+	
 	return rc;
 }
 
@@ -479,6 +497,19 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
             return rc;
 	}
 	s_ctrl->sensor_state = MSM_SENSOR_POWER_UP;
+	
+	if (strstr(sensor_name, "s5k6d1yx")) {
+		pr_info("[msm_camera/%s] turning led on\n", __func__);
+		
+		// turn led off first.
+		alternateFrontLED(0, 0, 0, 0,
+						  0, 0, 0, 0);
+		
+		alternateFrontLED(1000, 75, 0, 50,
+						  1000, 75, 0, 50);
+		
+		flg_plasma_fled_lock = true;
+	}
 
 	return rc;
 }
