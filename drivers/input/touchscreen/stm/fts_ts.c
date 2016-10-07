@@ -1675,12 +1675,23 @@ static unsigned char fts_event_handler_type_b(struct fts_ts_info *info,
 				"[HP] tID:%d\n", TouchID);
 #endif
 		} else if (EventID == EVENTID_LEAVE_POINTER) {
+#if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 			/*dev_info(&info->client->dev,
-				"[R] tID:%d mc: %d tc:%d lx:%d ly:%d Ver[%02X%04X%01X%01X]\n",
+				"[R] tID:%d mc: %d tc:%d lx:%d ly:%d Ver[%02X%04X%01X%01X%01X]\n",
 				TouchID, info->finger[TouchID].mcount, info->touch_count,
 				info->finger[TouchID].lx, info->finger[TouchID].ly,
 				info->panel_revision, info->fw_main_version_of_ic,
-				info->flip_enable, info->mshover_enabled);*/
+				info->flip_enable, info->mshover_enabled, info->mainscr_disable);*/
+#else
+			/*dev_info(&info->client->dev,
+				"[R] tID:%d loc:%c%c mc: %d tc:%d Ver[%02X%04X%01X%01X%01X]\n",
+				TouchID,
+				location_detect(info, info->finger[TouchID].ly, 1),
+				location_detect(info, info->finger[TouchID].lx, 0),
+				info->finger[TouchID].mcount, info->touch_count,
+				info->panel_revision, info->fw_main_version_of_ic,
+				info->flip_enable, info->mshover_enabled, info->mainscr_disable);*/
+#endif
 			info->finger[TouchID].mcount = 0;
 		}/* else if (EventID == EVENTID_HOVER_LEAVE_POINTER) {
 			if (info->hover_present) {
@@ -2619,7 +2630,7 @@ static int fts_remove(struct i2c_client *client)
 	fts_command(info, FLUSHBUFFER);
 
 	fts_irq_enable(info, false);
-    
+
 #if defined(CONFIG_SECURE_TOUCH)
 	for (i = 0; i < ARRAY_SIZE(attrs); i++) {
 		sysfs_remove_file(&info->input_dev->dev.kobj,
@@ -3053,7 +3064,6 @@ static int fts_stop_device(struct fts_ts_info *info)
 #endif
 
 	} else {
-		
 		fts_interrupt_set(info, INT_DISABLE);
 		disable_irq(info->irq);
 
@@ -3159,7 +3169,6 @@ static int fts_start_device(struct fts_ts_info *info)
 			disable_irq_wake(info->client->irq);
 
 	} else {
-		
 		fts_power_ctrl(info, true);
 
 		info->touch_stopped = false;
