@@ -29,18 +29,26 @@
 
 extern unsigned long sttg_gpufreq_mid_freq;
 extern unsigned long sttg_gpufreq_min_freq_cable;
+extern unsigned long sttg_gpufreq_micropunch_freq;
 extern unsigned long sttg_gpufreq_punch_freq;
+extern unsigned long sttg_memfreq_micropunch_freq;
 extern unsigned long sttg_memfreq_punch_freq;
 extern unsigned long sttg_gpufreq_scrolling_freq;
 extern unsigned long sttg_memfreq_scrolling_freq;
 extern unsigned long sttg_gpufreq_epen_freq;
 extern unsigned long sttg_memfreq_epen_freq;
 extern int flg_ctr_inputboost_punch;
+extern int flg_ctr_devfreq_gpu_micropunch;
+extern int flg_ctr_devfreq_mem_micropunch;
 extern int flg_ctr_inputboost_scrolling;
+extern int flg_ctr_inputboost_scrollingfreq;
 extern int flg_ctr_inputboost_epen;
 extern bool flg_power_cableattached;
+extern unsigned int zz_powersave;
+extern unsigned int zz_powersave_allowgpumem;
 int flg_ctr_devfreq_max = 0;
 int flg_ctr_devfreq_mid = 0;
+int flg_ctr_devfreq_min = 0;
 
 static struct class *devfreq_class;
 
@@ -222,78 +230,100 @@ int update_devfreq(struct devfreq *devfreq)
 	 * min_freq
 	 */
 	
-	if (flg_ctr_devfreq_max > 0) {
-		
-		//pr_info("[devfreq] flg_ctr_devfreq_max = %d, target: %ld, name: %s, id: %d\n",
-		//		flg_ctr_devfreq_max, freq, devfreq->governor->name, devfreq->profile->num_governor_data);
-		
-		freq = devfreq->max_freq;
-		
-		//pr_info("[devfreq] newfreq: %ld, name: %s, max: %ld, min: %ld\n",
-		//		freq, devfreq->governor->name, devfreq->max_freq, devfreq->min_freq);
-		
-	} else {
-		
-		// mid boost only applies to the gpu.
-		if (devfreq->profile->num_governor_data == 2){
+	if (!zz_powersave || zz_powersave_allowgpumem) {
+		if (flg_ctr_devfreq_max > 0) {
 			
-			// if the cable is attached and we have a min freq.
-			if (flg_power_cableattached && sttg_gpufreq_min_freq_cable > 0) {
-				tmp_gpufreq_freq = sttg_gpufreq_min_freq_cable;
+			//pr_info("[devfreq] flg_ctr_devfreq_max = %d, target: %ld, name: %s, id: %d\n",
+			//		flg_ctr_devfreq_max, freq, devfreq->governor->name, devfreq->profile->num_governor_data);
+			
+			freq = devfreq->max_freq;
+			
+			//pr_info("[devfreq] newfreq: %ld, name: %s, max: %ld, min: %ld\n",
+			//		freq, devfreq->governor->name, devfreq->max_freq, devfreq->min_freq);
+			
+		} else {
+			
+			// mid boost only applies to the gpu.
+			if (devfreq->profile->num_governor_data == 2){
+				
+				// if the cable is attached and we have a min freq.
+				if (flg_power_cableattached && sttg_gpufreq_min_freq_cable > 0) {
+					tmp_gpufreq_freq = sttg_gpufreq_min_freq_cable;
+				}
+				
+				// if the mid booster is active.
+				if (flg_ctr_devfreq_mid > 0 && sttg_gpufreq_mid_freq > 0) {
+					// apply the highest one.
+					tmp_gpufreq_freq = max(sttg_gpufreq_mid_freq, sttg_gpufreq_min_freq_cable);
+				}
+				
+				devfreq->profile->get_cur_freq(devfreq->dev.parent, &cur_freq);
+				
+				//pr_info("[devfreq] flg_ctr_devfreq_mid = %d, cur_freq: %ld, target: %ld, sttg: %ld, name: %s, cable: %d\n",
+				//		flg_ctr_devfreq_mid, cur_freq, freq, tmp_gpufreq_freq, devfreq->governor->name, flg_power_cableattached);
+				
+				// if the current (or target) gpu freq is below the new one, boost.
+				if (cur_freq < tmp_gpufreq_freq || (freq > 0 && freq < tmp_gpufreq_freq)) {
+					freq = tmp_gpufreq_freq;
+					//pr_info("[devfreq] bypass - newfreq: %ld\n", freq);
+				}
+				
+				if (sttg_gpufreq_micropunch_freq
+					&& flg_ctr_devfreq_gpu_micropunch > 0
+					&& freq < sttg_gpufreq_micropunch_freq) {
+					
+					flg_ctr_devfreq_gpu_micropunch--;
+					freq = sttg_gpufreq_micropunch_freq;
+				}
+				
+				if (sttg_gpufreq_punch_freq
+					&& flg_ctr_inputboost_punch > 0
+					&& freq < sttg_gpufreq_punch_freq)
+					freq = sttg_gpufreq_punch_freq;
+				
+				if (sttg_gpufreq_scrolling_freq
+					&& flg_ctr_inputboost_scrolling > 0
+					&& flg_ctr_inputboost_scrollingfreq > 0
+					&& freq < sttg_gpufreq_scrolling_freq) {
+					freq = sttg_gpufreq_scrolling_freq;
+					//pr_info("[devfreq] sttg_gpufreq_scrolling_freq - ctr: %d\n", flg_ctr_inputboost_scrollingfreq);
+				}
+				
+				if (sttg_gpufreq_epen_freq
+					&& flg_ctr_inputboost_epen > 0
+					&& freq < sttg_gpufreq_epen_freq)
+					freq = sttg_gpufreq_epen_freq;
+				
+			} else if (devfreq->profile->num_governor_data == 5) {
+				
+				if (sttg_memfreq_micropunch_freq
+					&& flg_ctr_devfreq_mem_micropunch > 0
+					&& freq < sttg_memfreq_micropunch_freq) {
+					
+					flg_ctr_devfreq_mem_micropunch--;
+					freq = sttg_memfreq_micropunch_freq;
+				}
+				
+				if (sttg_memfreq_punch_freq
+					&& flg_ctr_inputboost_punch > 0
+					&& freq < sttg_memfreq_punch_freq)
+					freq = sttg_memfreq_punch_freq;
+				
+				if (sttg_memfreq_scrolling_freq
+					&& flg_ctr_inputboost_scrolling > 0
+					&& flg_ctr_inputboost_scrollingfreq > 0
+					&& freq < sttg_memfreq_scrolling_freq)
+					freq = sttg_memfreq_scrolling_freq;
+				
+				if (sttg_memfreq_epen_freq
+					&& flg_ctr_inputboost_epen > 0
+					&& freq < sttg_memfreq_epen_freq)
+					freq = sttg_memfreq_epen_freq;
 			}
-			
-			// if the mid booster is active.
-			if (flg_ctr_devfreq_mid > 0 && sttg_gpufreq_mid_freq > 0) {
-				// apply the highest one.
-				tmp_gpufreq_freq = max(sttg_gpufreq_mid_freq, sttg_gpufreq_min_freq_cable);
-			}
-			
-			devfreq->profile->get_cur_freq(devfreq->dev.parent, &cur_freq);
-			
-			//pr_info("[devfreq] flg_ctr_devfreq_mid = %d, cur_freq: %ld, target: %ld, sttg: %ld, name: %s, cable: %d\n",
-			//		flg_ctr_devfreq_mid, cur_freq, freq, tmp_gpufreq_freq, devfreq->governor->name, flg_power_cableattached);
-			
-			// if the current (or target) gpu freq is below the new one, boost.
-			if (cur_freq < tmp_gpufreq_freq || (freq > 0 && freq < tmp_gpufreq_freq)) {
-				freq = tmp_gpufreq_freq;
-				//pr_info("[devfreq] bypass - newfreq: %ld\n", freq);
-			}
-			
-			if (sttg_gpufreq_punch_freq
-				&& flg_ctr_inputboost_punch > 0
-				&& freq < sttg_gpufreq_punch_freq)
-				freq = sttg_gpufreq_punch_freq;
-			
-			if (sttg_gpufreq_scrolling_freq
-				&& flg_ctr_inputboost_scrolling > 0
-				&& freq < sttg_gpufreq_scrolling_freq)
-				freq = sttg_gpufreq_scrolling_freq;
-			
-			if (sttg_gpufreq_epen_freq
-				&& flg_ctr_inputboost_epen > 0
-				&& freq < sttg_gpufreq_epen_freq)
-				freq = sttg_gpufreq_epen_freq;
-			
-		} else if (devfreq->profile->num_governor_data == 5) {
-			
-			if (sttg_memfreq_punch_freq
-				&& flg_ctr_inputboost_punch > 0
-				&& freq < sttg_memfreq_punch_freq)
-				freq = sttg_memfreq_punch_freq;
-			
-			if (sttg_memfreq_scrolling_freq
-				&& flg_ctr_inputboost_scrolling > 0
-				&& freq < sttg_memfreq_scrolling_freq)
-				freq = sttg_memfreq_scrolling_freq;
-			
-			if (sttg_memfreq_epen_freq
-				&& flg_ctr_inputboost_epen > 0
-				&& freq < sttg_memfreq_epen_freq)
-				freq = sttg_memfreq_epen_freq;
 		}
 	}
 
-	if (devfreq->min_freq && freq < devfreq->min_freq) {
+	if (devfreq->min_freq && (freq < devfreq->min_freq || flg_ctr_devfreq_min)) {
 		freq = devfreq->min_freq;
 		flags &= ~DEVFREQ_FLAG_LEAST_UPPER_BOUND; /* Use GLB */
 	}
