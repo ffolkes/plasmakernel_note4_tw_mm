@@ -999,8 +999,8 @@ static ssize_t oom_adj_write(struct file *file, const char __user *buf,
 	 * /proc/pid/oom_score_adj instead.
 	 */
 	pr_warn_once("%s (%d): /proc/%d/oom_adj is deprecated, please use /proc/%d/oom_score_adj instead.\n",
-				 current->comm, task_pid_nr(current), task_pid_nr(task),
-				 task_pid_nr(task));
+		  current->comm, task_pid_nr(current), task_pid_nr(task),
+		  task_pid_nr(task));
 	
 	// whitelisted processes should have an oom_adj of 0.
 	for (i = 0; i < plasma_white_size; i++) {
@@ -1171,7 +1171,7 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 	int i;
 	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
 	//int plasma_autowhite_size = ARRAY_SIZE(plasma_ary_lmk_autoprotectedpids);
-	
+
 	memset(buffer, 0, sizeof(buffer));
 	if (count > sizeof(buffer) - 1)
 		count = sizeof(buffer) - 1;
@@ -1211,7 +1211,7 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 		err = -EACCES;
 		goto err_sighand;
 	}
-	
+
 	// whitelisted processes should have an oom_adj of 0.
 	for (i = 0; i < plasma_white_size; i++) {
 		if (task->pid == plasma_ary_lmk_protectedpids[i]) {
