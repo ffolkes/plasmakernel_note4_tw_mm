@@ -43,6 +43,11 @@
 #include <asm/cacheflush.h>
 #include "audit.h"	/* audit_signal_info() */
 
+extern int plasma_ary_signal_protectedpids[50];
+extern int plasma_ary_signal_autoprotectedpids[20];
+static unsigned int flg_allowedtodie_pid = 0;
+int ctr_sig9 = 0;
+
 /*
  * SLAB caches for signal bits.
  */
@@ -1053,6 +1058,9 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	int ret = 0, result;
 
 	assert_spin_locked(&t->sighand->siglock);
+	
+	/*pr_info("[signal/%s] sig: %d, pid: %d, current_pid: %d, current_ppid: %d, parent_comm: %s, pgrp: %d, comm: %s, tgid: %d, ancestor_ns: %d\n",
+	 __func__, sig, t->pid, task_pid_nr(current), current->group_leader->pid, current->group_leader->comm, task_pgrp_nr(current), current->comm, current->tgid, from_ancestor_ns);*/
 
 	result = TRACE_SIGNAL_IGNORED;
 	if (!prepare_signal(sig, t,
@@ -1157,6 +1165,9 @@ static int send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	from_ancestor_ns = si_fromuser(info) &&
 			   !task_pid_nr_ns(current, task_active_pid_ns(t));
 #endif
+	
+	/*pr_info("[signal/%s] sig: %d, pid: %d, current_pid: %d, current_ppid: %d, parent_comm: %s, pgrp: %d, comm: %s, tgid: %d, ancestor_ns: %d\n",
+			__func__, sig, t->pid, task_pid_nr(current), current->group_leader->pid, current->group_leader->comm, task_pgrp_nr(current), current->comm, current->tgid, from_ancestor_ns);*/
 
 	return __send_signal(sig, info, t, group, from_ancestor_ns);
 }
@@ -1197,12 +1208,23 @@ __setup("print-fatal-signals=", setup_print_fatal_signals);
 int
 __group_send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 {
+	//pr_info("[signal/%s] sig: %d, from: %d, to: %d\n", __func__, sig, current->pid, p->pid);
+	
+	if (sig == 17
+		&& flg_allowedtodie_pid == current->pid) {
+		
+		flg_allowedtodie_pid = 0;
+		pr_info("%s: process %d (%s) has died\n",
+				__func__, current->pid, current->comm);
+	}
+	
 	return send_signal(sig, info, p, 1);
 }
 
 static int
 specific_send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 {
+	//pr_info("[signal/%s] sig: %d, from: %d, to: %d\n", __func__, sig, current->pid, t->pid);
 	return send_signal(sig, info, t, 0);
 }
 
@@ -1211,6 +1233,8 @@ int do_send_sig_info(int sig, struct siginfo *info, struct task_struct *p,
 {
 	unsigned long flags;
 	int ret = -ESRCH;
+	
+	//pr_info("[signal/%s] sig: %d, from: %d, to: %d, flg_allowedtodie_pid: %d\n", __func__, sig, current->pid, p->pid, flg_allowedtodie_pid);
 
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, group);
@@ -1315,6 +1339,16 @@ struct sighand_struct *__lock_task_sighand(struct task_struct *tsk,
 int group_send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 {
 	int ret;
+	
+	//pr_info("[signal/%s] sig: %d, from: %d, to: %d\n", __func__, sig, current->pid, p->pid);
+	
+	if (sig == 17
+		&& flg_allowedtodie_pid == current->pid) {
+		
+		flg_allowedtodie_pid = 0;
+		pr_info("%s: process %d (%s) has died\n",
+				__func__, current->pid, current->comm);
+	}
 
 	rcu_read_lock();
 	ret = check_kill_permission(sig, info, p);
@@ -1335,11 +1369,15 @@ int __kill_pgrp_info(int sig, struct siginfo *info, struct pid *pgrp)
 {
 	struct task_struct *p = NULL;
 	int retval, success;
+	
+	//pr_info("[signal/%s] sig: %d, from: %d\n", __func__, sig, current->pid);
 
 	success = 0;
 	retval = -ESRCH;
 	do_each_pid_task(pgrp, PIDTYPE_PGID, p) {
-		int err = group_send_sig_info(sig, info, p);
+		int err;
+		//pr_info("[signal/%s] going to send sig: %d, from: %d, to: %d\n", __func__, sig, current->pid, p->pid);
+		err = group_send_sig_info(sig, info, p);
 		success |= !err;
 		retval = err;
 	} while_each_pid_task(pgrp, PIDTYPE_PGID, p);
@@ -1352,6 +1390,9 @@ int kill_pid_info(int sig, struct siginfo *info, struct pid *pid)
 	struct task_struct *p;
 
 	rcu_read_lock();
+	
+	//pr_info("[signal/%s] sig: %d, from: %d\n", __func__, sig, current->pid);
+	
 retry:
 	p = pid_task(pid, PIDTYPE_PID);
 	if (p) {
@@ -1396,6 +1437,8 @@ int kill_pid_info_as_cred(int sig, struct siginfo *info, struct pid *pid,
 	int ret = -EINVAL;
 	struct task_struct *p;
 	unsigned long flags;
+	
+	//pr_info("[signal/%s] current_pid: %d\n", __func__, task_pid_nr(current));
 
 	if (!valid_signal(sig))
 		return ret;
@@ -1437,6 +1480,8 @@ EXPORT_SYMBOL_GPL(kill_pid_info_as_cred);
 static int kill_something_info(int sig, struct siginfo *info, pid_t pid)
 {
 	int ret;
+	
+	//pr_info("[signal/%s] sig: %d, from: %d (%s)\n", __func__, sig, current->pid, current->comm);
 
 	if (pid > 0) {
 		rcu_read_lock();
@@ -1456,7 +1501,12 @@ static int kill_something_info(int sig, struct siginfo *info, pid_t pid)
 		for_each_process(p) {
 			if (task_pid_vnr(p) > 1 &&
 					!same_thread_group(p, current)) {
-				int err = group_send_sig_info(sig, info, p);
+				int err;
+				
+				//pr_info("[signal/%s] going to send sig: %d, from: %d (%s), to: %d (%s)\n",
+				//		__func__, sig, current->pid, current->comm, p->pid, p->comm);
+				
+				err = group_send_sig_info(sig, info, p);
 				++count;
 				if (err != -EPERM)
 					retval = err;
@@ -1479,6 +1529,9 @@ int send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 	 * Make sure legacy kernel users don't send in bad values
 	 * (normal paths check this in check_kill_permission).
 	 */
+	
+	pr_info("[signal/%s] sig: %d, from: %d, to: %d\n", __func__, sig, current->pid, p->pid);
+	
 	if (!valid_signal(sig))
 		return -EINVAL;
 
@@ -1491,12 +1544,16 @@ int send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 int
 send_sig(int sig, struct task_struct *p, int priv)
 {
+	//pr_info("[signal/%s] current_pid: %d\n", __func__, task_pid_nr(current));
+	
 	return send_sig_info(sig, __si_special(priv), p);
 }
 
 void
 force_sig(int sig, struct task_struct *p)
 {
+	//pr_info("[signal/%s] current_pid: %d\n", __func__, task_pid_nr(current));
+	
 	force_sig_info(sig, SEND_SIG_PRIV, p);
 }
 
@@ -1522,6 +1579,8 @@ force_sigsegv(int sig, struct task_struct *p)
 int kill_pgrp(struct pid *pid, int sig, int priv)
 {
 	int ret;
+	
+	//pr_info("[signal/%s]\n", __func__);
 
 	read_lock(&tasklist_lock);
 	ret = __kill_pgrp_info(sig, __si_special(priv), pid);
@@ -1533,6 +1592,8 @@ EXPORT_SYMBOL(kill_pgrp);
 
 int kill_pid(struct pid *pid, int sig, int priv)
 {
+	//pr_info("[signal/%s] current_pid: %d\n", __func__, task_pid_nr(current));
+	
 	return kill_pid_info(sig, __si_special(priv), pid);
 }
 EXPORT_SYMBOL(kill_pid);
@@ -2910,6 +2971,51 @@ SYSCALL_DEFINE4(rt_sigtimedwait, const sigset_t __user *, uthese,
 SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 {
 	struct siginfo info;
+	int i;
+	int plasma_white_size = 0;
+	int plasma_autowhite_size = 0;
+	
+	if (sig == 15) {
+		
+		ctr_sig9 = 0;
+		flg_allowedtodie_pid = pid;
+		pr_info("%s: potentially protected process %d can be killed, ctr_sig9: %d\n",
+				__func__, pid, ctr_sig9);
+	}
+	
+	if (sig == 9) {
+		
+		//pr_info("%s: process %d going to be killed, ctr_sig9: %d, flg_allowedtodie_pid: %d\n",
+		//		__func__, pid, ctr_sig9, flg_allowedtodie_pid);
+		
+		if (!flg_allowedtodie_pid) {
+			
+			plasma_white_size = ARRAY_SIZE(plasma_ary_signal_protectedpids);
+			
+			// whitelisted processes should not be killed.
+			for (i = 0; i < plasma_white_size; i++) {
+				if (pid == plasma_ary_signal_protectedpids[i]) {
+					pr_info("%s: protected process %d cannot be killed, aborting\n",
+							__func__, pid);
+					return -EINVAL;
+				}
+			}
+			
+			plasma_autowhite_size = ARRAY_SIZE(plasma_ary_signal_autoprotectedpids);
+			
+			// autowhitelisted processes should not be killed.
+			for (i = 0; i < plasma_autowhite_size; i++) {
+				if (pid == plasma_ary_signal_autoprotectedpids[i]) {
+					pr_info("%s: autoprotected process %d cannot be killed, aborting\n",
+							__func__, pid);
+					return -EINVAL;
+				}
+			}
+			
+		} else
+			if (ctr_sig9++ > 20)
+				flg_allowedtodie_pid = 0;
+	}
 
 	info.si_signo = sig;
 	info.si_errno = 0;
@@ -2925,6 +3031,8 @@ do_send_specific(pid_t tgid, pid_t pid, int sig, struct siginfo *info)
 {
 	struct task_struct *p;
 	int error = -ESRCH;
+	
+	//pr_info("[signal/%s]\n", __func__);
 
 	rcu_read_lock();
 	p = find_task_by_vpid(pid);
