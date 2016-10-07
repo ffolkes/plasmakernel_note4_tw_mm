@@ -73,7 +73,7 @@ static uint32_t oom_count = 0;
 #endif
 
 extern int plasma_ary_lmk_protectedpids[50];
-extern int plasma_ary_lmk_autoprotectedpids[10];
+extern int plasma_ary_lmk_autoprotectedpids[20];
 
 static uint32_t lowmem_debug_level = 1;
 static short lowmem_adj[6] = {
