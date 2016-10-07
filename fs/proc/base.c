@@ -94,6 +94,9 @@
 #include "internal.h"
 #include "fd.h"
 
+extern int plasma_ary_lmk_protectedpids[50];
+extern int plasma_ary_lmk_autoprotectedpids[10];
+
 /* NOTE:
  *	Implementing inode permission operations in /proc is almost
  *	certainly an error.  Permission checks need to happen during
@@ -938,7 +941,10 @@ static ssize_t oom_adj_write(struct file *file, const char __user *buf,
 	int oom_adj;
 	unsigned long flags;
 	int err;
-	
+	int i;
+	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
+	//int plasma_autowhite_size = ARRAY_SIZE(plasma_ary_lmk_autoprotectedpids);
+
 	memset(buffer, 0, sizeof(buffer));
 	if (count > sizeof(buffer) - 1)
 		count = sizeof(buffer) - 1;
@@ -996,6 +1002,29 @@ static ssize_t oom_adj_write(struct file *file, const char __user *buf,
 				 current->comm, task_pid_nr(current), task_pid_nr(task),
 				 task_pid_nr(task));
 	
+	// whitelisted processes should have an oom_adj of 0.
+	for (i = 0; i < plasma_white_size; i++) {
+		if (task->pid == plasma_ary_lmk_protectedpids[i]) {
+			//pr_info("%s: adjusting plasma whitelisted process %d (%s) to oom_adj 0\n",
+			//		__func__, task->pid, task->comm);
+			oom_adj = -1000;
+			//goto found;
+		}
+	}
+	
+	/*// this list is for the last few recently used apps, as added by a shell script.
+	// it is a small list that is autonomously maintained, and therefore cannot be
+	// mixed with other whitelists.
+	for (i = 0; i < plasma_autowhite_size; i++) {
+		if (task->pid == plasma_ary_lmk_autoprotectedpids[i]) {
+			pr_info("%s: adjusting plasma autowhitelisted process %d (%s) to oom_adj 0\n",
+					__func__, task->pid, task->comm);
+			oom_adj = 0;
+			break;
+		}
+	}*/
+	
+//found:
 	task->signal->oom_score_adj = oom_adj;
 	trace_oom_score_adj_update(task);
 err_sighand:
@@ -1139,6 +1168,9 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 	unsigned long flags;
 	int oom_score_adj;
 	int err;
+	int i;
+	int plasma_white_size = ARRAY_SIZE(plasma_ary_lmk_protectedpids);
+	//int plasma_autowhite_size = ARRAY_SIZE(plasma_ary_lmk_autoprotectedpids);
 	
 	memset(buffer, 0, sizeof(buffer));
 	if (count > sizeof(buffer) - 1)
@@ -1180,6 +1212,31 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 		goto err_sighand;
 	}
 	
+	// whitelisted processes should have an oom_adj of 0.
+	for (i = 0; i < plasma_white_size; i++) {
+		if (task->pid == plasma_ary_lmk_protectedpids[i]) {
+			//pr_info("%s: adjusting plasma whitelisted process %d (%s) to oom_adj 0\n",
+			//		__func__, task->pid, task->comm);
+			oom_score_adj = -1000;
+			//goto found;
+		}
+	}
+	
+	/*// this list is for the last few recently used apps, as added by a shell script.
+	// it is a small list that is autonomously maintained, and therefore cannot be
+	// mixed with other whitelists.
+	for (i = 0; i < plasma_autowhite_size; i++) {
+		if (task->pid == plasma_ary_lmk_autoprotectedpids[i]) {
+			pr_info("%s: adjusting plasma autowhitelisted process %d (%s) to oom_adj 0\n",
+					__func__, task->pid, task->comm);
+			oom_score_adj = 0;
+			break;
+		}
+	}
+	
+found:*/
+	//pr_info("%s: adjusting process %d (%s) to oom_adj %d\n",
+	//		__func__, task->pid, task->comm, oom_score_adj);
 	task->signal->oom_score_adj = (short)oom_score_adj;
 	if (has_capability_noaudit(current, CAP_SYS_RESOURCE))
 		task->signal->oom_score_adj_min = (short)oom_score_adj;
