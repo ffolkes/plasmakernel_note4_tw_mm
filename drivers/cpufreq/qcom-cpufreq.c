@@ -539,6 +539,8 @@ static int msm_cpufreq_resume(void)
 			continue;
 		if (policy.cur <= policy.max && policy.cur >= policy.min)
 			continue;
+		pr_info("cpufreq: Frequency violation for CPU%d, cur: %d, max: %d, min: %d\n",
+				cpu, policy.cur, policy.max, policy.min);
 		ret = cpufreq_update_policy(cpu);
 		if (ret)
 			pr_info("cpufreq: Current frequency violates policy min/max for CPU%d\n",

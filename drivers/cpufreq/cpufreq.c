@@ -2073,6 +2073,9 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
 					CPUFREQ_POSTCHANGE);
 		}
 	}
+	
+	//if (policy->cpu < 1)
+	//	pr_info("%s: cpu %d freq change complete to %d\n", __func__, policy->cpu, target_freq);
 
 out:
 	return retval;
